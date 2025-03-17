@@ -326,7 +326,7 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
             ])
         
         # Prepare the prompt
-        prompt = f"""
+        llm_prompt = f"""
         You are a MikroTik networking expert. Convert these technical API responses to natural language for a network engineer.
         
         User Query: "{query}"
@@ -339,9 +339,9 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
         for endpoint_data in endpoints_with_responses:
             endpoint = endpoint_data["endpoint"]
             response = endpoint_data["response"]
-            prompt += f"\nEndpoint: {endpoint['path']}\nResponse: {json.dumps(response, indent=2)}\n"
+            llm_prompt += f"\nEndpoint: {endpoint['path']}\nResponse: {json.dumps(response, indent=2)}\n"
         
-        prompt += """
+        llm_prompt += """
         Provide a clear, consolidated answer that addresses the user's query completely using data from all endpoints.
         
         Format your response in these sections:
@@ -359,71 +359,71 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
         Be concise yet comprehensive, focusing on what's most relevant to the network engineer's query.
         """
         
-        # Initialize the response text
-        full_response = ""
+        # Create a clean result area with a heading and single placeholder
         result_placeholder.markdown("## 📊 Result")
-        response_placeholder = result_placeholder.empty()
+        response_area = result_placeholder.container()
         
-        # Choose between reasoning and standard generation based on user setting
-        if 'use_reasoning' in st.session_state and st.session_state.use_reasoning:
-            try:
-                # Display info about reasoning mode
-                model_info = f"Using primary model: {llm.default_model}"
-                response_placeholder.info(f"{model_info} with two-stage reasoning")
-                
-                stream_generator = llm.generate_with_reasoning(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    temperature=0.7,
-                    stream=True
-                )
-            except Exception as e:
-                st.warning(f"Reasoning generation failed, falling back to standard: {str(e)}")
-                stream_generator = llm.get_completion(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    temperature=0.7,
-                    stream=True
-                )
+        # Start with subtle progress indication
+        progress_placeholder = response_area.empty()
+        response_placeholder = response_area.empty()
+        
+        # Initial message
+        model_info = f"{'deepseek-chat' if 'deepseek' in llm.default_model else llm.default_model}"
+        progress_placeholder.markdown(f"<div style='color: #6c757d; font-style: italic;'>Analyzing with {model_info}...</div>", unsafe_allow_html=True)
+        
+        # Choose between reasoning and standard generation
+        use_reasoning = st.session_state.get('use_reasoning', True)
+        
+        # Start the LLM request immediately in the background
+        if use_reasoning:
+            progress_placeholder.markdown(f"<div style='color: #6c757d; font-style: italic;'>Processing with reasoning...</div>", unsafe_allow_html=True)
+            stream_generator = llm.generate_with_reasoning(
+                prompt=llm_prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                stream=True
+            )
         else:
-            # Display info about model being used
-            model_info = f"Using primary model: {llm.default_model}"
-            response_placeholder.info(model_info)
-            
-            # Generate response with streaming
+            progress_placeholder.markdown(f"<div style='color: #6c757d; font-style: italic;'>Processing query...</div>", unsafe_allow_html=True)
             stream_generator = llm.get_completion(
-                prompt=prompt,
+                prompt=llm_prompt,
                 system_prompt=system_prompt,
                 temperature=0.7,
                 stream=True
             )
         
-        # Process the streaming response
-        cursor_animation = ["▌", "▐", ""]
-        cursor_idx = 0
+        # Initialize the response text
+        full_response = ""
+        cursor = "▌"
         
+        # Process the streaming response
         try:
+            # Process the stream
             for chunk in stream_generator:
-                full_response += chunk
-                # Animate cursor for better user feedback
-                cursor = cursor_animation[cursor_idx % len(cursor_animation)]
-                response_placeholder.markdown(full_response + cursor)
-                cursor_idx += 1
-            
-            # Final update without the cursor
+                if chunk:
+                    # Clear progress message on first chunk
+                    if not full_response:
+                        progress_placeholder.empty()
+                    
+                    full_response += chunk
+                    response_placeholder.markdown(full_response + cursor)
+                
+            # Final update without cursor
             response_placeholder.markdown(full_response)
+            return full_response
+            
         except Exception as e:
-            st.error(f"Streaming error: {str(e)}")
-            # Try to salvage whatever we have
+            # Error handling
+            progress_placeholder.empty()
             if full_response:
                 response_placeholder.markdown(full_response)
+                return full_response
             else:
-                response_placeholder.error("Failed to generate a response. Please try again.")
-                full_response = "Error generating response. Please try again."
-        
-        return full_response
+                response_placeholder.error(f"Error during streaming: {str(e)}")
+                return f"Error during streaming: {str(e)}"
+    
     except Exception as e:
-        # Fallback if formatting fails
+        # Fallback if overall formatting fails
         result_placeholder.error(f"Error formatting responses: {e}")
         results = []
         for endpoint_data in endpoints_with_responses:
@@ -724,7 +724,7 @@ with main_col:
                 })
             
             # Format all responses into natural language with streaming
-            api_status.info("💬 Generating human-readable response...")
+            api_status.empty()  # Clear any previous status messages
             consolidated_response = format_responses_to_natural_language_stream(
                 st.session_state.submitted_query, 
                 endpoints_with_responses,

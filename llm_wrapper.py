@@ -153,8 +153,8 @@ class LLMWrapper:
             raise Exception(f"Gemini API call failed: {str(e)}")
     
     def _process_gemini_stream(self, response):
-        """Process streaming response from Gemini API"""
-        # Read SSE events from response
+        """Process streaming response from Gemini API with enhanced streaming"""
+        buffer = ""
         for line in response.iter_lines():
             if line:
                 line = line.decode('utf-8')
@@ -162,6 +162,8 @@ class LLMWrapper:
                     data = line[6:]  # Remove 'data: ' prefix
                     
                     if data == "[DONE]":
+                        if buffer:  # Yield any remaining buffered text
+                            yield buffer
                         break
                     
                     try:
@@ -171,6 +173,7 @@ class LLMWrapper:
                             if "content" in candidate and "parts" in candidate["content"]:
                                 for part in candidate["content"]["parts"]:
                                     if "text" in part:
+                                        # Immediate yield for each text chunk
                                         yield part["text"]
                     except json.JSONDecodeError:
                         continue
@@ -242,7 +245,7 @@ class LLMWrapper:
             raise Exception(f"DeepSeek API call failed: {str(e)}")
     
     def _process_deepseek_stream(self, response):
-        """Process streaming response from DeepSeek API"""
+        """Process streaming response from DeepSeek API with enhanced streaming"""
         for line in response.iter_lines():
             if line:
                 line = line.decode('utf-8')
@@ -257,9 +260,10 @@ class LLMWrapper:
                         chunk = json.loads(data)
                         delta_content = chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')
                         if delta_content:
+                            # Yield each chunk immediately without buffering
                             yield delta_content
                     except json.JSONDecodeError:
-                        continue
+                        continue    
     
     def get_completion(
         self, 
