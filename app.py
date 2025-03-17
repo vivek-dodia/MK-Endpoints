@@ -9,6 +9,8 @@ import google.generativeai as genai
 import re
 import uuid
 import routeros_api
+import asyncio
+from typing import List, Dict, Any, Generator
 
 # Configure page first
 st.set_page_config(
@@ -32,7 +34,7 @@ MIKROTIK_PW = os.environ.get("test_harlem_mikrotik_pw", "")
 
 # Initialize Google Gemini
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GEMINI_MODEL = os.environ.get("DEFAULT_MODEL", "gemini-2.0-pro-exp-02-05")
+GEMINI_MODEL = os.environ.get("DEFAULT_MODEL", "gemini-2.0-flash")
 
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -107,14 +109,20 @@ def safe_disconnect():
         except:
             pass
 
-def call_mikrotik_api(endpoint, parameters=None, router_ip=None):
+def call_mikrotik_api(endpoint, parameters=None, router_ip=None, status_placeholder=None):
     """Call the MikroTik API with proper error handling and fallbacks"""
+    # Update status if placeholder provided
+    if status_placeholder:
+        status_placeholder.write(f"Querying: {endpoint}")
+    
     # Use the actual router if credentials are available
     if MIKROTIK_USER and MIKROTIK_PW and not st.session_state.get('use_mock_data', False):
         try:
             # Ensure we have a connection
             api = st.session_state.mikrotik_api
             if not api:
+                if status_placeholder:
+                    status_placeholder.write(f"Establishing connection to router...")
                 api = connect_to_mikrotik(MIKROTIK_IP, MIKROTIK_USER, MIKROTIK_PW)
                 if not api:
                     raise Exception("Could not establish connection")
@@ -132,11 +140,16 @@ def call_mikrotik_api(endpoint, parameters=None, router_ip=None):
                 
             # Get the appropriate resource
             try:
+                if status_placeholder:
+                    status_placeholder.write(f"Accessing resource: /{command}")
                 resource = api.get_resource('/' + command)
                 result = resource.get()
+                if status_placeholder:
+                    status_placeholder.write(f"✅ Data retrieved from: {endpoint}")
                 return result
             except Exception as e:
-                st.warning(f"Error accessing {command}: {str(e)}")
+                if status_placeholder:
+                    status_placeholder.write(f"⚠️ Error accessing {command}: {str(e)}")
                 
                 # Try to handle special cases or path mappings
                 if "no such command" in str(e).lower():
@@ -156,8 +169,12 @@ def call_mikrotik_api(endpoint, parameters=None, router_ip=None):
                     # Try alternatives
                     for alt in alt_commands:
                         try:
+                            if status_placeholder:
+                                status_placeholder.write(f"Trying alternative: /{alt}")
                             resource = api.get_resource('/' + alt)
                             result = resource.get()
+                            if status_placeholder:
+                                status_placeholder.write(f"✅ Data retrieved from alternative: /{alt}")
                             return result
                         except:
                             continue
@@ -166,11 +183,17 @@ def call_mikrotik_api(endpoint, parameters=None, router_ip=None):
                 raise
         
         except Exception as e:
-            st.warning(f"Error with MikroTik API: {str(e)}")
-            # Fall back to mock data
-            st.warning("Using mock data instead of live router data")
+            if status_placeholder:
+                status_placeholder.write(f"⚠️ Error with MikroTik API: {str(e)}")
+                status_placeholder.write("Using mock data instead of live router data")
+            else:
+                st.warning(f"Error with MikroTik API: {str(e)}")
+                st.warning("Using mock data instead of live router data")
     
     # If we reach here, use mock data
+    if status_placeholder:
+        status_placeholder.write(f"📊 Using mock data for: {endpoint}")
+    
     if "/interface" in endpoint and "print" in endpoint:
         return [
             {"name": "ether1", "type": "ether", "mtu": 1500, "actual-mtu": 1500, "mac-address": "00:0C:29:45:2A:3B", "running": True},
@@ -273,8 +296,8 @@ def generate_related_questions(query, results):
             "View wireless clients"
         ]
 
-def format_responses_to_natural_language(query, endpoints_with_responses):
-    """Format multiple API responses into natural language"""
+def format_responses_to_natural_language_stream(query, endpoints_with_responses, result_placeholder):
+    """Format multiple API responses into natural language with streaming output"""
     try:
         if GOOGLE_API_KEY:
             # Use Gemini to format
@@ -316,9 +339,24 @@ def format_responses_to_natural_language(query, endpoints_with_responses):
             Use technical networking terminology appropriate for a network engineer.
             """
             
-            # Generate response
-            response = model.generate_content(prompt)
-            return response.text
+            # Initialize the response text
+            full_response = ""
+            result_placeholder.markdown("## 📊 Result")
+            response_placeholder = result_placeholder.empty()
+            
+            # Generate response with streaming
+            response = model.generate_content(prompt, stream=True)
+            
+            for chunk in response:
+                if not chunk.text:
+                    continue
+                full_response += chunk.text
+                response_placeholder.markdown(full_response + "▌")
+            
+            # Final update without the cursor
+            response_placeholder.markdown(full_response)
+            
+            return full_response
         else:
             # Fallback if Gemini not available
             results = []
@@ -327,21 +365,54 @@ def format_responses_to_natural_language(query, endpoints_with_responses):
                 response = endpoint_data["response"]
                 results.append(f"### Results from {endpoint['path']}:\n{json.dumps(response, indent=2)}")
             
-            return "\n\n".join(results)
+            result_text = "\n\n".join(results)
+            result_placeholder.markdown("## 📊 Result")
+            result_placeholder.markdown(result_text)
+            return result_text
     except Exception as e:
         # Fallback if formatting fails
-        st.error(f"Error formatting responses: {e}")
+        result_placeholder.error(f"Error formatting responses: {e}")
         results = []
         for endpoint_data in endpoints_with_responses:
             endpoint = endpoint_data["endpoint"]
             response = endpoint_data["response"]
             results.append(f"### Results from {endpoint['path']}:\n{json.dumps(response, indent=2)}")
         
-        return "\n\n".join(results)
+        result_text = "\n\n".join(results)
+        result_placeholder.markdown(result_text)
+        return result_text
 
 # Header
 st.title("🔍 MikroTik API Finder")
 st.markdown("Ask questions in natural language and get answers from the right MikroTik API endpoints.")
+
+# Define custom CSS for status indicators
+st.markdown("""
+<style>
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+}
+.status-green {
+    background-color: #28a745;
+}
+.status-red {
+    background-color: #dc3545;
+}
+.status-gray {
+    background-color: #6c757d;
+}
+.status-container {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Main content and sidebar layout
 main_col, sidebar_col = st.columns([3, 1])
@@ -358,6 +429,9 @@ with sidebar_col:
     
     # Router connection settings
     st.header("Router Connection")
+    
+    # Connection status indicator
+    conn_status_container = st.container()
     router_ip = st.text_input("Router IP", MIKROTIK_IP)
     router_user = st.text_input("Username", MIKROTIK_USER)
     router_password = st.text_input("Password", MIKROTIK_PW, type="password")
@@ -369,27 +443,60 @@ with sidebar_col:
                           help="Use simulated data instead of connecting to a real router")
     st.session_state.use_mock_data = use_mock
     
+    # Display connection status indicator
+    with conn_status_container:
+        if st.session_state.use_mock_data:
+            st.markdown(
+                f"""<div class="status-container">
+                    <div class="status-indicator status-gray"></div>
+                    <div>Using mock data</div>
+                </div>""", 
+                unsafe_allow_html=True
+            )
+        elif st.session_state.mikrotik_connected:
+            st.markdown(
+                f"""<div class="status-container">
+                    <div class="status-indicator status-green"></div>
+                    <div>Connected to {router_ip}</div>
+                </div>""", 
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"""<div class="status-container">
+                    <div class="status-indicator status-red"></div>
+                    <div>Not connected</div>
+                </div>""", 
+                unsafe_allow_html=True
+            )
+    
     if not use_mock:
         # Test connection button
         if st.button("Test Connection"):
-            with st.spinner("Testing connection..."):
-                # Disconnect any existing connection
-                safe_disconnect()
-                
-                # Try to connect
-                api = connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
-                if api:
-                    # Test with a simple command
-                    try:
-                        resource = api.get_resource('/system/resource')
-                        result = resource.get()[0]
-                        st.success("Connection successful!")
-                        st.write(f"Router uptime: {result.get('uptime', 'Unknown')}")
-                        st.write(f"Version: {result.get('version', 'Unknown')}")
-                    except Exception as e:
-                        st.error(f"Connection test failed: {str(e)}")
-                else:
-                    st.error("Connection failed")
+            conn_test_status = st.empty()
+            conn_test_status.info("Testing connection...")
+            
+            # Disconnect any existing connection
+            safe_disconnect()
+            
+            # Try to connect
+            api = connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
+            if api:
+                # Test with a simple command
+                try:
+                    resource = api.get_resource('/system/resource')
+                    result = resource.get()[0]
+                    conn_test_status.markdown(
+                        f"""✅ Connection successful!  
+                        Router uptime: {result.get('uptime', 'Unknown')}  
+                        Version: {result.get('version', 'Unknown')}"""
+                    )
+                    # Force refresh the connection status indicator
+                    st.rerun()
+                except Exception as e:
+                    conn_test_status.error(f"Connection test failed: {str(e)}")
+            else:
+                conn_test_status.error("Connection failed")
     
     st.markdown("---")
     
@@ -399,6 +506,7 @@ with sidebar_col:
         for question in st.session_state.related_questions:
             if st.button(question, key=f"related_{hash(question)}"):
                 st.session_state.query = question
+                st.session_state.submitted_query = question
                 st.rerun()
     
     st.markdown("---")
@@ -422,17 +530,26 @@ with main_col:
     # Initialize session state for query
     if 'query' not in st.session_state:
         st.session_state.query = ""
-
-    # Main query input
-    query = st.text_input("Ask about MikroTik configuration:", value=st.session_state.query)
-    st.session_state.query = query  # Update session state
     
-    # Connection status indicator
-    if not st.session_state.use_mock_data:
-        if st.session_state.mikrotik_connected:
-            st.success(f"✅ Connected to MikroTik at {router_ip}")
-        else:
-            st.warning(f"⚠️ Not connected to MikroTik - using mock data")
+    # Initialize session state for submission control
+    if 'submitted_query' not in st.session_state:
+        st.session_state.submitted_query = ""
+        
+    # Callback to update submitted query when form is submitted
+    def submit_query():
+        st.session_state.submitted_query = st.session_state.query
+    
+    # Main query input with form
+    with st.form(key="query_form"):
+        query_input = st.text_input(
+            "Ask about MikroTik configuration:", 
+            value=st.session_state.query,
+            key="query"
+        )
+        submit_button = st.form_submit_button("Search", on_click=submit_query)
+    
+    # Separately handle example and related question clicks
+    query = st.session_state.submitted_query
     
     # Conversation history display
     if len(st.session_state.conversation_history) > 0:
@@ -443,77 +560,102 @@ with main_col:
                 st.markdown("---")
     
     # Process the query
-    if query:
-        with st.spinner("Finding relevant API endpoints..."):
-            # Record start time
-            start_time = time.time()
+    if st.session_state.submitted_query:
+        # Create placeholder for streaming updates
+        process_status = st.empty()
+        endpoints_status = st.empty()
+        api_status = st.empty()
+        result_container = st.empty()
+        tech_details_container = st.container()
+        
+        process_status.info("🔍 Finding relevant API endpoints...")
+        
+        # Record start time
+        start_time = time.time()
+        
+        # Generate embedding for query
+        query_embedding = model.encode(query)
+        
+        # Search Qdrant for similar endpoints
+        search_results = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_embedding.tolist(),
+            limit=num_results * 2,  # Get more to allow for filtering
+            score_threshold=score_threshold
+        )
+        
+        # Filter out ID endpoints if option is selected
+        if exclude_id_endpoints:
+            search_results = [result for result in search_results if not is_id_endpoint(result.payload["path"])]
+            search_results = search_results[:num_results]  # Trim back to requested limit
+        
+        # Calculate elapsed time
+        elapsed_time = time.time() - start_time
+        
+        # Display results
+        if search_results:
+            # Clear any process status
+            process_status.empty()
             
-            # Generate embedding for query
-            query_embedding = model.encode(query)
+            # Show selected endpoints with integrated stats
+            endpoints_text = f"### Selected API Endpoints ({len(search_results)} found in {elapsed_time:.2f}s):\n"
+            for i, result in enumerate(search_results):
+                endpoints_text += f"{i+1}. **{result.payload['path']}** (Score: {result.score:.2f})\n"
+            endpoints_status.markdown(endpoints_text)
             
-            # Search Qdrant for similar endpoints
-            search_results = client.search(
-                collection_name=COLLECTION_NAME,
-                query_vector=query_embedding.tolist(),
-                limit=num_results * 2,  # Get more to allow for filtering
-                score_threshold=score_threshold
+            # Generate related questions in the background
+            related_questions = generate_related_questions(query, search_results)
+            st.session_state.related_questions = related_questions
+            
+            # Connect to router if not already connected
+            if not st.session_state.use_mock_data and not st.session_state.mikrotik_connected:
+                api_status.info("🔌 Connecting to MikroTik...")
+                connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
+            
+            # Execute API calls to all relevant endpoints
+            api_status.info("📡 Querying MikroTik router...")
+            endpoints_with_responses = []
+            
+            for i, result in enumerate(search_results):
+                endpoint = result.payload
+                
+                # Update status with current endpoint
+                api_status.info(f"📡 Querying endpoint {i+1}/{len(search_results)}: {endpoint['path']}")
+                
+                # Execute API call
+                response = call_mikrotik_api(
+                    endpoint["path"], 
+                    status_placeholder=api_status
+                )
+                
+                # Store endpoint and response
+                endpoints_with_responses.append({
+                    "endpoint": endpoint,
+                    "response": response,
+                    "score": result.score
+                })
+            
+            # Format all responses into natural language with streaming
+            api_status.info("💬 Generating human-readable response...")
+            consolidated_response = format_responses_to_natural_language_stream(
+                query, 
+                endpoints_with_responses,
+                result_container
             )
             
-            # Filter out ID endpoints if option is selected
-            if exclude_id_endpoints:
-                search_results = [result for result in search_results if not is_id_endpoint(result.payload["path"])]
-                search_results = search_results[:num_results]  # Trim back to requested limit
+            # Add to conversation history
+            st.session_state.conversation_history.append({
+                "query": query,
+                "response": consolidated_response,
+                "endpoints": [ep["endpoint"]["path"] for ep in endpoints_with_responses],
+                "timestamp": time.time()
+            })
             
-            # Calculate elapsed time
-            elapsed_time = time.time() - start_time
+            # Clear status messages
+            api_status.empty()
             
-            # Display results
-            if search_results:
-                st.success(f"Found {len(search_results)} relevant API endpoints in {elapsed_time:.2f} seconds")
-                
-                # Generate related questions
-                related_questions = generate_related_questions(query, search_results)
-                st.session_state.related_questions = related_questions
-                
-                # Connect to router if not already connected
-                if not st.session_state.use_mock_data and not st.session_state.mikrotik_connected:
-                    with st.spinner("Connecting to MikroTik..."):
-                        connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
-                
-                # Execute API calls to all relevant endpoints
-                with st.spinner("Querying MikroTik router..."):
-                    endpoints_with_responses = []
-                    
-                    for result in search_results:
-                        endpoint = result.payload
-                        
-                        # Execute API call
-                        response = call_mikrotik_api(endpoint["path"])
-                        
-                        # Store endpoint and response
-                        endpoints_with_responses.append({
-                            "endpoint": endpoint,
-                            "response": response,
-                            "score": result.score
-                        })
-                
-                # Format all responses into natural language
-                with st.spinner("Formatting results..."):
-                    consolidated_response = format_responses_to_natural_language(query, endpoints_with_responses)
-                
-                # Add to conversation history
-                st.session_state.conversation_history.append({
-                    "query": query,
-                    "response": consolidated_response,
-                    "endpoints": [ep["endpoint"]["path"] for ep in endpoints_with_responses],
-                    "timestamp": time.time()
-                })
-                
-                # Display consolidated result
-                st.markdown("## 📊 Result")
-                st.markdown(consolidated_response)
-                
-                # Collapsible technical details
+            # Collapsible technical details
+            with tech_details_container:
                 with st.expander("🔍 Technical Details"):
                     tabs = st.tabs([f"{i+1}. {ep['endpoint']['path']} ({ep['score']:.2f})" for i, ep in enumerate(endpoints_with_responses)])
                     
@@ -538,8 +680,8 @@ with main_col:
                             
                             st.markdown("### Raw Response")
                             st.json(response)
-            else:
-                st.warning("No matching API endpoints found. Try a different query or lower the similarity threshold.")
+        else:
+            process_status.warning("No matching API endpoints found. Try a different query or lower the similarity threshold.")
 
 # Cleanup on app exit
 if hasattr(st, 'on_session_end'):
@@ -547,4 +689,26 @@ if hasattr(st, 'on_session_end'):
 
 # Footer
 st.markdown("---")
+
+# Add search metrics in a subtle way
+if 'last_search_time' not in st.session_state:
+    st.session_state.last_search_time = None
+    st.session_state.last_search_count = 0
+
+if st.session_state.submitted_query and search_results:
+    st.session_state.last_search_time = elapsed_time
+    st.session_state.last_search_count = len(search_results)
+
+# Display metrics in footer
+metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+with metrics_col1:
+    if st.session_state.last_search_time:
+        st.metric("Last search time", f"{st.session_state.last_search_time:.2f}s")
+with metrics_col2:
+    if st.session_state.last_search_count:
+        st.metric("Endpoints found", st.session_state.last_search_count)
+with metrics_col3:
+    if len(st.session_state.conversation_history) > 0:
+        st.metric("Conversation length", len(st.session_state.conversation_history))
+
 st.markdown("This tool uses vector similarity to find the most relevant MikroTik API endpoints and consolidates information into natural language.")
