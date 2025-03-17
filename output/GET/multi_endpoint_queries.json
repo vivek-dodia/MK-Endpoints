@@ -1,0 +1,478 @@
+[
+  {
+    "query": "Which interfaces are configured to allow specific MAC addresses for Winbox connections, and what type of traffic are those interfaces monitoring?",
+    "required_endpoints": [
+      "/tool/mac-server/mac-winbox/{id}",
+      "/tool/traffic-monitor/{id}"
+    ],
+    "correlation_logic": "Iterate through each MAC Winbox configuration entry (using the interface ID from `/tool/mac-server/mac-winbox/{id}`). For each, check if a traffic monitor is configured on the same interface (matching the interface ID to the `id` in `/tool/traffic-monitor/{id}`). If both exist for the same interface, report the allowed MAC address type and the traffic type being monitored.",
+    "family": "tool"
+  },
+  {
+    "query": "For each active MAC server session, what type of resource graphing is enabled, if any, and what type of allowed MAC address type settings are configured for Winbox?",
+    "required_endpoints": [
+      "/tool/mac-server/sessions",
+      "/tool/graphing/resource/{id}",
+      "/tool/mac-server/mac-winbox/{id}"
+    ],
+    "correlation_logic": "Iterate through active MAC server sessions. For each session, identify the interface it's associated with. Then, search for a MAC Winbox configuration entry associated with the same interface. Finally, search for a graphing resource associated with the same interface. If all three exist, report the session details, the allowed MAC address type setting, and the graphing resource type.",
+    "family": "tool"
+  },
+  {
+    "query": "Show me all interfaces that have both MAC Winbox restrictions and traffic monitoring enabled.",
+    "required_endpoints": [
+      "/tool/mac-server/mac-winbox/{id}",
+      "/tool/traffic-monitor/{id}"
+    ],
+    "correlation_logic": "Iterate through all MAC Winbox entries and extract the interface ID. Then iterate through all traffic monitor entries and extract the interface ID. Return only the interface IDs that appear in both lists.",
+    "family": "tool"
+  },
+  {
+    "query": "Are there any interfaces that have MAC Winbox restrictions and are configured to send email notifications?",
+    "required_endpoints": [
+      "/tool/mac-server/mac-winbox/{id}",
+      "/tool/e-mail"
+    ],
+    "correlation_logic": "Examine the MAC Winbox entries to see which interfaces have MAC address restrictions for Winbox. The /tool/e-mail endpoint will allow you to determine if emailing is enabled. The interfaces from the MAC Winbox endpoint have nothing to do with the /tool/e-mail endpoint, but this query requires both to answer it completely. The interfaces from the MAC Winbox entries are the ones with MAC address restrictions and email is enabled if the /tool/e-mail config is enabled.",
+    "family": "tool"
+  },
+  {
+    "query": "Which interfaces with active MAC server sessions are being monitored by the graphing tool, and what type of resource is being graphed?",
+    "required_endpoints": [
+      "/tool/mac-server/sessions",
+      "/tool/graphing/resource/{id}"
+    ],
+    "correlation_logic": "Iterate through active MAC server sessions and extract the interface ID. Then, iterate through the graphing resources. If a graphing resource's ID matches an interface ID from the MAC server sessions, report the interface and the resource type being graphed.",
+    "family": "tool"
+  },
+  {
+    "query": "Which Modbus security rules apply to Modbus instances using the Bluetooth interface with ID 'blue1'?",
+    "required_endpoints": [
+      "/iot/bluetooth/{id}",
+      "/iot/modbus/{id}",
+      "/iot/modbus/security-rules/{id}"
+    ],
+    "correlation_logic": "First, get the Bluetooth interface details using `/iot/bluetooth/{id}` where id='blue1'. Then, iterate through all Modbus instances from `/iot/modbus/{id}` and check if any of them use the 'blue1' Bluetooth interface (this would need a property on the Modbus instance that refers to the used interface). Finally, for each Modbus instance connected to 'blue1', fetch the associated security rules from `/iot/modbus/security-rules/{id}`. You'd need a property on the security rule that refers to the modbus instance it applies to.",
+    "family": "iot"
+  },
+  {
+    "query": "Show me all Bluetooth advertisers and the Modbus instances that might be advertising data to them.",
+    "required_endpoints": [
+      "/iot/bluetooth/advertisers/{id}",
+      "/iot/modbus/{id}"
+    ],
+    "correlation_logic": "Retrieve all Bluetooth advertisers using `/iot/bluetooth/advertisers/{id}`. Retrieve all Modbus instances using `/iot/modbus/{id}`. Then, check if any Modbus instances are configured to send data to any of the discovered Bluetooth advertisers. This would require some form of configuration on the Modbus instance that specifies the target advertiser or a way to link Modbus data to a specific advertiser profile (e.g., through data types or addresses). The correlation would involve comparing these configurations to identify potential data flows.",
+    "family": "iot"
+  },
+  {
+    "query": "List all Modbus security rules and the Bluetooth whitelist entries that might be affected by them.",
+    "required_endpoints": [
+      "/iot/modbus/security-rules/{id}",
+      "/iot/bluetooth/whitelist/{id}"
+    ],
+    "correlation_logic": "Retrieve all Modbus security rules using `/iot/modbus/security-rules/{id}`. Retrieve all Bluetooth whitelist entries using `/iot/bluetooth/whitelist/{id}`. The correlation depends on how the security rules are designed. If the Modbus security rules can be configured to allow/deny traffic based on Bluetooth device addresses (which are part of the whitelist entries), then you can check if any rules are directly referencing addresses found in the Bluetooth whitelist. Alternatively, if rules use broader criteria that *could* include whitelisted devices, you would need to explain the potential overlap.",
+    "family": "iot"
+  },
+  {
+    "query": "Show me all Bluetooth interfaces and the Modbus instances that are configured to communicate over them, including the security rules applied to those Modbus instances.",
+    "required_endpoints": [
+      "/iot/bluetooth/{id}",
+      "/iot/modbus/{id}",
+      "/iot/modbus/security-rules/{id}"
+    ],
+    "correlation_logic": "Retrieve all Bluetooth interfaces using `/iot/bluetooth/{id}`. Retrieve all Modbus instances using `/iot/modbus/{id}` and identify those that are configured to use a specific Bluetooth interface (this requires a property on the Modbus instance that refers to the used interface). For each of those Modbus instances, retrieve the associated security rules using `/iot/modbus/security-rules/{id}` (assuming there's a property on the security rule that refers to the Modbus instance it applies to).  The final result would be a mapping of Bluetooth interface -> Modbus instances using that interface -> Security rules for those instances.",
+    "family": "iot"
+  },
+  {
+    "query": "Which Bluetooth advertisers are associated with devices on the Bluetooth whitelist, and what Modbus data is being advertised by those devices?",
+    "required_endpoints": [
+      "/iot/bluetooth/advertisers/{id}",
+      "/iot/bluetooth/whitelist/{id}",
+      "/iot/modbus/{id}"
+    ],
+    "correlation_logic": "First, retrieve all Bluetooth advertisers using `/iot/bluetooth/advertisers/{id}` and all Bluetooth whitelist entries using `/iot/bluetooth/whitelist/{id}`.  Identify advertisers that are associated with devices on the whitelist.  This would require the advertiser configuration to reference the device's Bluetooth address, which can then be matched against the addresses in the whitelist. Then, for those advertisers, determine which Modbus instances are sending data to them. This requires linking the Modbus instances' data or configuration to the specific advertisers (e.g., through configuration or data type matching).",
+    "family": "iot"
+  },
+  {
+    "query": "Which IPv6 DHCP client options are being used and what firewall address lists contain the addresses assigned by the DHCP server?",
+    "required_endpoints": [
+      "/ipv6/dhcp-client/option/{id}",
+      "/ipv6/firewall/address-list",
+      "/ipv6/dhcp-server/binding"
+    ],
+    "correlation_logic": "First, get all DHCP server bindings to find the assigned IPv6 addresses. Then, retrieve all IPv6 firewall address lists and check if those addresses are present in any of the lists. Finally, retrieve the configuration of any DHCP client options configured.",
+    "family": "ipv6"
+  },
+  {
+    "query": "What are the firewall filter rules and address lists that are affecting DHCP relay traffic?",
+    "required_endpoints": [
+      "/ipv6/firewall/filter/{id}",
+      "/ipv6/firewall/address-list",
+      "/ipv6/dhcp-relay"
+    ],
+    "correlation_logic": "Get all DHCP relay configurations. Identify the interfaces used for DHCP relay. Then, retrieve all IPv6 firewall filter rules and address lists. Check if any of the filter rules apply to the interfaces used for DHCP relay, or if any address lists contain the DHCP relay server addresses.",
+    "family": "ipv6"
+  },
+  {
+    "query": "What IPv6 addresses has the DHCP server assigned, and are those addresses being used in any firewall filter rules?",
+    "required_endpoints": [
+      "/ipv6/dhcp-server/binding",
+      "/ipv6/firewall/filter/{id}"
+    ],
+    "correlation_logic": "Retrieve all DHCP server bindings to get the assigned IPv6 addresses. Then, retrieve all IPv6 firewall filter rules and check if any of the rules filter traffic based on those addresses (either as source or destination).",
+    "family": "ipv6"
+  },
+  {
+    "query": "What IPv6 DHCP client options are configured and are those options being used by any of the firewall filters?",
+    "required_endpoints": [
+      "/ipv6/dhcp-client/option/{id}",
+      "/ipv6/firewall/filter/{id}"
+    ],
+    "correlation_logic": "Retrieve all IPv6 DHCP client option configurations.  Then, retrieve all IPv6 firewall filter rules and examine them for references to any of those DHCP client options (this will likely require understanding the syntax used to reference DHCP options within firewall rules, if such a mechanism exists).",
+    "family": "ipv6"
+  },
+  {
+    "query": "Show me all DHCP relay configurations and the firewall address lists that contain the relay's target address.",
+    "required_endpoints": [
+      "/ipv6/dhcp-relay",
+      "/ipv6/firewall/address-list"
+    ],
+    "correlation_logic": "Get all DHCP relay configurations and extract the target IPv6 address for each relay. Then, retrieve all IPv6 firewall address lists and check if any of those lists contain the DHCP relay target address.",
+    "family": "ipv6"
+  },
+  {
+    "query": "Which services are generating the most notifications, and on which RouterOS interfaces are those services running?",
+    "required_endpoints": [
+      "/dude/service",
+      "/dude/notification",
+      "/dude/ros/interface/{id}"
+    ],
+    "correlation_logic": "First, aggregate notification counts per service from `/dude/notification`. Then, use the service names to find the corresponding service entries in `/dude/service`. From the service entries, identify the target devices (likely RouterOS devices). Finally, for those RouterOS devices, determine the interface ID and use `/dude/ros/interface/{id}` to retrieve the interface type.",
+    "family": "dude"
+  },
+  {
+    "query": "Show me all RouterOS IP addresses, and which services are monitoring the interfaces associated with those addresses.",
+    "required_endpoints": [
+      "/dude/ros/address",
+      "/dude/ros/interface/{id}",
+      "/dude/service"
+    ],
+    "correlation_logic": "First, retrieve all IP addresses from `/dude/ros/address`. Then, for each IP address, determine the associated interface ID from the same `/dude/ros/address` entry. Use this interface ID to query `/dude/ros/interface/{id}`. Finally, find all services from `/dude/service` that target these interfaces.",
+    "family": "dude"
+  },
+  {
+    "query": "Which agents are associated with services that are currently generating notifications, and what are the types of those agents?",
+    "required_endpoints": [
+      "/dude/service",
+      "/dude/notification",
+      "/dude/agent/{id}"
+    ],
+    "correlation_logic": "First, find all services that are generating notifications by querying `/dude/notification` and extracting the service names. Then, for each service name, search `/dude/service` to find the associated agent ID. Finally, use the agent ID to query `/dude/agent/{id}` to determine the agent type.",
+    "family": "dude"
+  },
+  {
+    "query": "For each RouterOS interface, list the services monitoring it and the most recent notifications related to those services on that interface.",
+    "required_endpoints": [
+      "/dude/ros/interface/{id}",
+      "/dude/service",
+      "/dude/notification"
+    ],
+    "correlation_logic": "First, iterate through all interfaces found using an external list of all possible interface IDs (or assume a manageable range and iterate). Then, use the interface ID to query `/dude/ros/interface/{id}` to get the interface details. Next, find all services from `/dude/service` that target this interface. Finally, filter notifications from `/dude/notification` to include only those related to the identified services and the specific interface.",
+    "family": "dude"
+  },
+  {
+    "query": "Show me all services that monitor interfaces with specific types (e.g., VLAN), and list the IP addresses associated with those interfaces.",
+    "required_endpoints": [
+      "/dude/ros/interface/{id}",
+      "/dude/service",
+      "/dude/ros/address"
+    ],
+    "correlation_logic": "First, iterate through all interfaces using an external list of all possible interface IDs (or assume a manageable range and iterate). Query `/dude/ros/interface/{id}` for each interface to filter and find interfaces of the desired type (e.g., VLAN). Then, find all services from `/dude/service` that target these interfaces. Finally, for each of the identified interfaces, find the associated IP addresses from `/dude/ros/address`.",
+    "family": "dude"
+  },
+  {
+    "query": "Which CAPsMAN controlled wireless interfaces are using WPA3 and what are their current operational channels?",
+    "required_endpoints": [
+      "/interface/wifi/capsman/remote-cap",
+      "/interface/wifi/security",
+      "/interface/wifi/configuration"
+    ],
+    "correlation_logic": "First, get a list of CAPsMAN controlled interfaces from `/interface/wifi/capsman/remote-cap`. Then, for each interface, find the associated security profile ID. Use the security profile ID to look up the security profile details in `/interface/wifi/security` to determine if it's using WPA3. Finally, use the interface name to find the current channel information from `/interface/wifi/configuration`.",
+    "family": "interface-wifi"
+  },
+  {
+    "query": "What are the security settings for all CAPsMAN controlled interfaces, and what type of CAPsMAN configuration is being used for each?",
+    "required_endpoints": [
+      "/interface/wifi/capsman/remote-cap",
+      "/interface/wifi/security",
+      "/interface/wifi/capsman/{id}"
+    ],
+    "correlation_logic": "Get the list of CAPsMAN controlled interfaces from `/interface/wifi/capsman/remote-cap`. For each interface, find the associated security profile ID. Use the security profile ID to look up the security profile details in `/interface/wifi/security`. Then, use the interface ID from remote-cap to find the specific CAPsMAN configuration using `/interface/wifi/capsman/{id}`.",
+    "family": "interface-wifi"
+  },
+  {
+    "query": "Show me the operational channel and transmit power for each CAPsMAN controlled interface and the security profile name used for that interface.",
+    "required_endpoints": [
+      "/interface/wifi/capsman/remote-cap",
+      "/interface/wifi/configuration",
+      "/interface/wifi/security"
+    ],
+    "correlation_logic": "Get the list of CAPsMAN controlled interfaces from `/interface/wifi/capsman/remote-cap`.  For each interface, use its name to retrieve the channel and transmit power from `/interface/wifi/configuration`. Also, retrieve the security profile ID associated with that interface from `/interface/wifi/capsman/remote-cap`.  Use the security profile ID to look up the security profile name in `/interface/wifi/security`.",
+    "family": "interface-wifi"
+  },
+  {
+    "query": "For all interfaces using WPA2, list their current channel width and which CAPsMAN remote CAP they are associated with (if any).",
+    "required_endpoints": [
+      "/interface/wifi/security",
+      "/interface/wifi/configuration",
+      "/interface/wifi/capsman/remote-cap"
+    ],
+    "correlation_logic": "First, iterate through `/interface/wifi/security` and identify security profiles using WPA2. Then, for each WPA2 profile, look up interfaces in `/interface/wifi/configuration` that are using that security profile. Finally, cross-reference these interfaces with the list of CAPsMAN remote CAPs in `/interface/wifi/capsman/remote-cap` to identify which interfaces are associated with CAPsMAN. For those interfaces, retrieve the CAPsMAN interface type.",
+    "family": "interface-wifi"
+  },
+  {
+    "query": "Which CAPsMAN controlled interfaces are actively transmitting and what are their configured security protocols?",
+    "required_endpoints": [
+      "/interface/wifi/capsman/remote-cap",
+      "/interface/wifi/configuration",
+      "/interface/wifi/security"
+    ],
+    "correlation_logic": "Get a list of CAPsMAN controlled interfaces using `/interface/wifi/capsman/remote-cap`. For each interface, check the 'tx-rate' or similar operational parameters from `/interface/wifi/configuration` to determine if it is actively transmitting (e.g., tx-rate > 0).  Find the associated security profile ID for each interface and use it to look up the configured security protocols (e.g., authentication-types, encryption) from `/interface/wifi/security`.",
+    "family": "interface-wifi"
+  },
+  {
+    "query": "For each bridge port, show me the associated physical device information and the type of port controller used.",
+    "required_endpoints": [
+      "/interface/bridge/port",
+      "/interface/bridge/port-controller/device",
+      "/interface/bridge/port-controller/port/{id}"
+    ],
+    "correlation_logic": "First, retrieve all bridge ports using `/interface/bridge/port`. Then, for each port, use the `port-controller` field (if present) to look up the port controller type using `/interface/bridge/port-controller/port/{id}`. Finally, use the `hw` field from the initial `/interface/bridge/port` result to find the corresponding device in `/interface/bridge/port-controller/device`.",
+    "family": "interface-bridge"
+  },
+  {
+    "query": "List all bridge ports and indicate if they are associated with a port extender, and if so, what type of extender is it?",
+    "required_endpoints": [
+      "/interface/bridge/port",
+      "/interface/bridge/port-extender/{id}"
+    ],
+    "correlation_logic": "Retrieve all bridge ports using `/interface/bridge/port`. For each port, check if the 'port-extender' property exists. If it does, use the extender ID to retrieve the specific port extender details from `/interface/bridge/port-extender/{id}` to determine the extender type.",
+    "family": "interface-bridge"
+  },
+  {
+    "query": "Show me all MAC addresses learned on bridge ports, and what type of port controller, if any, is associated with the bridge port where they were learned?",
+    "required_endpoints": [
+      "/interface/bridge/host/{id}",
+      "/interface/bridge/port",
+      "/interface/bridge/port-controller/port/{id}"
+    ],
+    "correlation_logic": "First, retrieve all hosts using `/interface/bridge/host/{id}`.  For each host, extract the bridge port interface name. Use this name to find the corresponding entry in `/interface/bridge/port`. From the bridge port entry, use the `port-controller` field (if present) to look up the port controller type using `/interface/bridge/port-controller/port/{id}`.",
+    "family": "interface-bridge"
+  },
+  {
+    "query": "Display a list of all bridge ports, their associated MAC addresses learned on that port, and whether hardware offloading is enabled for that port.",
+    "required_endpoints": [
+      "/interface/bridge/port",
+      "/interface/bridge/host/{id}"
+    ],
+    "correlation_logic": "Retrieve all bridge ports using `/interface/bridge/port`. For each port, retrieve all hosts from `/interface/bridge/host/{id}` and filter by the bridge interface to find the MAC addresses learned on that port. Determine if hardware offloading is enabled by looking at the 'hw' flag on the bridge port.",
+    "family": "interface-bridge"
+  },
+  {
+    "query": "Show me all physical network devices associated with bridge port controllers, and list the bridge ports that use those controllers.",
+    "required_endpoints": [
+      "/interface/bridge/port-controller/device",
+      "/interface/bridge/port"
+    ],
+    "correlation_logic": "First, retrieve all devices from `/interface/bridge/port-controller/device`. Then, retrieve all bridge ports from `/interface/bridge/port`. For each device, iterate through the bridge ports and check if the `hw` field on the bridge port matches the device name in `/interface/bridge/port-controller/device`. If there's a match, associate that bridge port with that device.",
+    "family": "interface-bridge"
+  },
+  {
+    "query": "Which wireless interfaces are currently being used for wireless sniffing and what security profile is configured on those interfaces?",
+    "required_endpoints": [
+      "/interface/wireless/sniffer",
+      "/interface/wireless/security-profiles/{id}"
+    ],
+    "correlation_logic": "First, retrieve all active wireless sniffer instances from `/interface/wireless/sniffer`. For each sniffer instance, identify the associated interface. Then, use the interface information to look up the corresponding security profile from `/interface/wireless/security-profiles/{id}` to get details about the encryption and authentication settings.",
+    "family": "interface-wireless"
+  },
+  {
+    "query": "For each wireless interface, show the current alignment data and which connect list entry it's using, if any.",
+    "required_endpoints": [
+      "/interface/wireless/align",
+      "/interface/wireless/connect-list/{id}"
+    ],
+    "correlation_logic": "Iterate through the wireless alignment data from `/interface/wireless/align`, which includes signal strength and quality for each interface.  Then, for each interface, check if a connect list entry is associated with it (this information would likely be an attribute on the interface itself, accessible via the align data). If a connect list entry ID exists, fetch the details of that entry from `/interface/wireless/connect-list/{id}` to display alongside the alignment data.",
+    "family": "interface-wireless"
+  },
+  {
+    "query": "Show me all wireless interfaces that are currently snooping and the SSIDs they are detecting.",
+    "required_endpoints": [
+      "/interface/wireless/snooper"
+    ],
+    "correlation_logic": "The snooper endpoint `/interface/wireless/snooper` provides real-time monitoring data, including the SSIDs detected by each wireless interface.  Since the question is about 'currently snooping', we need to filter the snooper data to show only active snooping instances and the SSIDs that they are detecting. The snooper endpoint will inherently provide the interface and SSID information.",
+    "family": "interface-wireless"
+  },
+  {
+    "query": "Which security profiles are associated with interfaces that are currently being aligned, and what are their authentication types?",
+    "required_endpoints": [
+      "/interface/wireless/align",
+      "/interface/wireless/security-profiles/{id}"
+    ],
+    "correlation_logic": "First, retrieve alignment data from `/interface/wireless/align` to identify interfaces currently being aligned. Extract the interface name or ID.  Then, determine the security profile associated with each aligned interface (this association would likely be present as an attribute in the align data, or the interface itself). Finally, retrieve the details of each security profile from `/interface/wireless/security-profiles/{id}` using the profile ID to get the authentication type.",
+    "family": "interface-wireless"
+  },
+  {
+    "query": "What are the most frequently detected SSIDs by each wireless interface snooper, and what security profiles are configured on the interfaces running those snoopers?",
+    "required_endpoints": [
+      "/interface/wireless/snooper",
+      "/interface/wireless/security-profiles/{id}"
+    ],
+    "correlation_logic": "First, gather data from `/interface/wireless/snooper`. For each wireless interface, count the occurrences of each detected SSID. Then, identify the security profile associated with that wireless interface. Finally, retrieve the security profile details from `/interface/wireless/security-profiles/{id}` to display the security configuration alongside the most frequent SSIDs.",
+    "family": "interface-wireless"
+  },
+  {
+    "query": "Which access list rules are applied to the clients connected to the CAP interface named 'wlan1', and what are the signal strengths of those clients?",
+    "required_endpoints": [
+      "/caps-man/registration-table",
+      "/caps-man/access-list",
+      "/caps-man/interface"
+    ],
+    "correlation_logic": "First, use `/caps-man/interface` to get the interface ID for 'wlan1'. Then, use the `/caps-man/registration-table` to filter for clients connected to that interface ID, retrieving their MAC addresses and signal strengths. Finally, use `/caps-man/access-list` to determine which access list rules apply to those specific MAC addresses.",
+    "family": "caps-man"
+  },
+  {
+    "query": "Show me all CAP configurations that use the 5GHz-turbo channel and list the MAC addresses of the CAPs currently using each configuration.",
+    "required_endpoints": [
+      "/caps-man/channel/{id}",
+      "/caps-man/configuration",
+      "/caps-man/registration-table"
+    ],
+    "correlation_logic": "First, iterate through `/caps-man/channel/{id}` to find the ID of the channel named '5GHz-turbo'. Then, use `/caps-man/configuration` to find all configuration profiles. For each configuration profile, use the channel ID to determine if it uses the '5GHz-turbo' channel. Finally, use `/caps-man/registration-table` to filter the CAPs based on which configuration profile they are using, and list their MAC addresses for each configuration that uses the specified channel.",
+    "family": "caps-man"
+  },
+  {
+    "query": "For each CAP configuration, list the access list being used and the number of clients currently associated with CAPs using that configuration.",
+    "required_endpoints": [
+      "/caps-man/configuration",
+      "/caps-man/access-list",
+      "/caps-man/registration-table"
+    ],
+    "correlation_logic": "First, iterate through `/caps-man/configuration` to get each configuration profile and its associated access list. Then, use `/caps-man/registration-table` to count the number of clients associated with each configuration profile. Finally, combine the configuration profile, access list, and client count into a single output.",
+    "family": "caps-man"
+  },
+  {
+    "query": "Which CAP interfaces are not using any access list, and what is the average signal strength of clients connected to those interfaces?",
+    "required_endpoints": [
+      "/caps-man/interface",
+      "/caps-man/access-list",
+      "/caps-man/registration-table"
+    ],
+    "correlation_logic": "First, get a list of all access lists from `/caps-man/access-list`. Then, iterate through `/caps-man/interface` to identify interfaces that do not have an access list assigned. Finally, use `/caps-man/registration-table` to filter for clients connected to the interfaces without access lists and calculate the average signal strength for each interface.",
+    "family": "caps-man"
+  },
+  {
+    "query": "Show the names of all CAP channels, the number of CAPs using each channel, and the minimum and maximum signal strengths reported by clients connected to those CAPs.",
+    "required_endpoints": [
+      "/caps-man/channel/{id}",
+      "/caps-man/registration-table",
+      "/caps-man/configuration"
+    ],
+    "correlation_logic": "First, iterate through `/caps-man/channel/{id}` to get a list of all channel names. Then, iterate through `/caps-man/configuration` to map each channel ID to the configurations that use them. Then, use the configuration information to filter `/caps-man/registration-table` and count the number of CAPs and clients using each channel. Also, extract the minimum and maximum signal strengths from the registration table for each channel.",
+    "family": "caps-man"
+  },
+  {
+    "query": "Which interfaces have MPLS enabled, and what are the global MPLS settings affecting their operation?",
+    "required_endpoints": [
+      "/mpls/interface",
+      "/mpls/settings"
+    ],
+    "correlation_logic": "The `/mpls/interface` endpoint provides a list of MPLS-enabled interfaces. The `/mpls/settings` endpoint provides global MPLS parameters such as `transport-address`. Information is combined by understanding how the global settings influence the behavior of MPLS on each interface. For example, the global `transport-address` determines the source IP used for LDP sessions originating from the interfaces listed in `/mpls/interface`.",
+    "family": "mpls"
+  },
+  {
+    "query": "Show me all MPLS forwarding entries and the interfaces they use, including the MPLS status of those interfaces.",
+    "required_endpoints": [
+      "/mpls/forwarding-table",
+      "/mpls/interface"
+    ],
+    "correlation_logic": "The `/mpls/forwarding-table` endpoint lists the MPLS forwarding entries, including the outgoing interface. The `/mpls/interface` endpoint provides the MPLS status of each interface.  The data is combined by matching the outgoing interface name from the forwarding table with the interface name in the `/mpls/interface` endpoint to determine its MPLS status (enabled/disabled, etc.).",
+    "family": "mpls"
+  },
+  {
+    "query": "What TE tunnels are configured, and on which interfaces is MPLS enabled that might be used by those tunnels?",
+    "required_endpoints": [
+      "/mpls/traffic-eng/tunnel",
+      "/mpls/interface"
+    ],
+    "correlation_logic": "The `/mpls/traffic-eng/tunnel` endpoint provides information about configured TE tunnels, including potential path constraints and interface preferences. The `/mpls/interface` endpoint lists interfaces with MPLS enabled. The correlation would involve examining the tunnel configuration to determine which interfaces it might utilize (explicit paths, etc.) and then checking the `/mpls/interface` output to confirm that MPLS is enabled on those interfaces and what their status is.",
+    "family": "mpls"
+  },
+  {
+    "query": "What prefixes are being advertised by LDP, and which interfaces are participating in LDP?",
+    "required_endpoints": [
+      "/mpls/ldp/advertise-filter",
+      "/mpls/interface"
+    ],
+    "correlation_logic": "The `/mpls/ldp/advertise-filter` endpoint specifies the filters that control which prefixes are advertised via LDP. The `/mpls/interface` endpoint lists interfaces enabled for MPLS and participating in LDP. The correlation involves identifying interfaces listed in `/mpls/interface` as LDP participants and then understanding which prefixes those interfaces are advertising based on the filters defined in `/mpls/ldp/advertise-filter`. This would give you the LDP advertised prefixes per LDP enabled interface.",
+    "family": "mpls"
+  },
+  {
+    "query": "How do the global MPLS settings affect the operation of my TE Tunnels?",
+    "required_endpoints": [
+      "/mpls/settings",
+      "/mpls/traffic-eng/tunnel"
+    ],
+    "correlation_logic": "The `/mpls/settings` endpoint provides global MPLS parameters (e.g., `transport-address`, `lsp-id`). The `/mpls/traffic-eng/tunnel` endpoint lists the configured TE tunnels. The correlation involves understanding how the global settings influence tunnel behavior. For example, the global `lsp-id` might affect the way tunnels are identified, and the `transport-address` might influence the source address used for tunnel signaling. You'd need to understand the documentation for each setting and how it impacts TE tunnel behavior to answer this completely.",
+    "family": "mpls"
+  },
+  {
+    "query": "Show me all user limitations and the advanced settings that are currently overriding their default values.",
+    "required_endpoints": [
+      "/user-manager/limitation",
+      "/user-manager/advanced"
+    ],
+    "correlation_logic": "Fetch all limitation profiles from `/user-manager/limitation`. Then, for each limitation profile, check `/user-manager/advanced` to see if any advanced settings are applied to override the default limitation settings. Match on the limitation profile ID or name to correlate the data.",
+    "family": "user-manager"
+  },
+  {
+    "query": "List all users and show which limitations are applied to them, along with any advanced settings that modify those limitations for specific users.",
+    "required_endpoints": [
+      "/user-manager",
+      "/user-manager/limitation",
+      "/user-manager/advanced"
+    ],
+    "correlation_logic": "First, retrieve all user configurations from `/user-manager`. Then, for each user, identify the applied limitation profile using the user's configuration data. Next, check `/user-manager/advanced` to find any advanced settings that override the default values of that limitation profile specifically for that user. Correlate users to limitations and advanced settings using the relevant IDs (e.g., limitation profile ID, user ID).",
+    "family": "user-manager"
+  },
+  {
+    "query": "What are the default limitations defined, and which users are *not* using those defaults because of advanced settings?",
+    "required_endpoints": [
+      "/user-manager/limitation",
+      "/user-manager",
+      "/user-manager/advanced"
+    ],
+    "correlation_logic": "Retrieve all limitation profiles from `/user-manager/limitation`.  Then, retrieve all users from `/user-manager`, and for each user, check `/user-manager/advanced` to see if any advanced settings exist that affect their limitation profile. Identify users who have advanced settings associated with their limitation to determine those *not* using the defaults. Relate users to limitations and advanced settings using IDs.",
+    "family": "user-manager"
+  },
+  {
+    "query": "Show me all users with a specific limitation profile, and list the values of the limitation profile's parameters, as well as any advanced settings overriding those parameters for each user.",
+    "required_endpoints": [
+      "/user-manager",
+      "/user-manager/limitation",
+      "/user-manager/advanced"
+    ],
+    "correlation_logic": "First, fetch all users from `/user-manager` and filter them to find those using the specified limitation profile (obtained from `/user-manager/limitation`). Then, retrieve the details of that specific limitation profile from `/user-manager/limitation`. Finally, for each user with that limitation profile, check `/user-manager/advanced` to see if any advanced settings are applied that override the limitation profile's parameters for that user.  Correlate by user ID and limitation profile ID.",
+    "family": "user-manager"
+  },
+  {
+    "query": "List all limitations and show me how many users are assigned to each, including a count of users who have advanced settings that override the default limitations.",
+    "required_endpoints": [
+      "/user-manager/limitation",
+      "/user-manager",
+      "/user-manager/advanced"
+    ],
+    "correlation_logic": "Retrieve all limitation profiles from `/user-manager/limitation`. Retrieve all users from `/user-manager` and count how many are assigned to each limitation profile.  Then, for each limitation profile, iterate through the assigned users and check `/user-manager/advanced` to determine how many have advanced settings applied that override the default limitations for that profile. Count the users with overrides for each limitation profile. Correlate users to limitations and advanced settings using the user ID and limitation ID.",
+    "family": "user-manager"
+  }
+]
