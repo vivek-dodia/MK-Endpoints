@@ -5,12 +5,15 @@ from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 import json
 import time
-import google.generativeai as genai
 import re
 import uuid
 import routeros_api
-import asyncio
+import warnings
 from typing import List, Dict, Any, Generator
+from llm_wrapper import LLMWrapper
+
+# Silence warnings
+warnings.filterwarnings("ignore", message="Examining the path of torch.classes")
 
 # Configure page first
 st.set_page_config(
@@ -32,12 +35,9 @@ MIKROTIK_IP = os.environ.get("test_harlem_mikrotik", "127.0.0.1")
 MIKROTIK_USER = os.environ.get("test_harlem_mikrotik_user", "")
 MIKROTIK_PW = os.environ.get("test_harlem_mikrotik_pw", "")
 
-# Initialize Google Gemini
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GEMINI_MODEL = os.environ.get("DEFAULT_MODEL", "gemini-2.0-flash")
-
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
+# Initialize LLM wrapper - properly configured for DeepSeek models
+# Note: don't include provider prefix in model name for initialization 
+llm = LLMWrapper(default_model="deepseek-chat")
 
 # Initialize session state for conversation history
 if 'conversation_history' not in st.session_state:
@@ -236,56 +236,70 @@ def call_mikrotik_api(endpoint, parameters=None, router_ip=None, status_placehol
 def generate_related_questions(query, results):
     """Generate related follow-up questions based on the original query and results"""
     try:
-        if GOOGLE_API_KEY:
-            model = genai.GenerativeModel(GEMINI_MODEL)
+        # Build context from results
+        endpoints_summary = "\n".join([
+            f"- {result.payload.get('path')}: {result.payload.get('summary', 'No summary')}"
+            for result in results[:3]
+        ])
+        
+        # Add conversation history context
+        history_context = ""
+        if len(st.session_state.conversation_history) > 0:
+            last_exchanges = st.session_state.conversation_history[-3:] if len(st.session_state.conversation_history) > 3 else st.session_state.conversation_history
+            history_context = "Previous questions:\n" + "\n".join([f"- {exchange['query']}" for exchange in last_exchanges])
+        
+        prompt = f"""
+        You are a MikroTik networking expert. Generate 3-5 logical follow-up questions based on this user's query.
+        
+        User Query: "{query}"
+        
+        Top relevant API endpoints:
+        {endpoints_summary}
+        
+        {history_context}
+        
+        Create natural language follow-up questions a network engineer might ask next. 
+        Make them specific, technical, and directly related to MikroTik router management.
+        
+        Return ONLY a JSON array of questions, with no other text.
+        Example: ["How many DHCP leases are active?", "What's the CPU utilization?"]
+        """
+        
+        # Use JSON-specific generation with lower temperature for more focused results
+        try:
+            questions = llm.generate_json(
+                prompt=prompt,
+                temperature=0.7
+            )
             
-            # Build context from results
-            endpoints_summary = "\n".join([
-                f"- {result.payload.get('path')}: {result.payload.get('summary', 'No summary')}"
-                for result in results[:3]
-            ])
+            # Handle different response formats
+            if isinstance(questions, list):
+                return questions[:5]  # Limit to 5 questions maximum
+            elif isinstance(questions, dict) and "questions" in questions:
+                return questions["questions"][:5]
+            else:
+                # Try to find an array in the response
+                for key, value in questions.items():
+                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], str):
+                        return value[:5]
             
-            # Add conversation history context
-            history_context = ""
-            if len(st.session_state.conversation_history) > 0:
-                last_exchanges = st.session_state.conversation_history[-3:] if len(st.session_state.conversation_history) > 3 else st.session_state.conversation_history
-                history_context = "Previous questions:\n" + "\n".join([f"- {exchange['query']}" for exchange in last_exchanges])
-            
-            prompt = f"""
-            You are a MikroTik networking expert. Generate 3-5 logical follow-up questions based on this user's query.
-            
-            User Query: "{query}"
-            
-            Top relevant API endpoints:
-            {endpoints_summary}
-            
-            {history_context}
-            
-            Create natural language follow-up questions a network engineer might ask next. 
-            Make them specific, technical, and directly related to MikroTik router management.
-            
-            Return ONLY a JSON array of questions, with no other text.
-            Example: ["How many DHCP leases are active?", "What's the CPU utilization?"]
-            """
-            
-            response = model.generate_content(prompt)
-            text = response.text
-            
-            # Clean up the response to ensure it's valid JSON
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            
-            questions = json.loads(text)
-            return questions[:5]  # Limit to 5 questions maximum
-        else:
-            # Fallback if Gemini not available
+            # Return default questions if format doesn't match expectations
             return [
-                f"Tell me more about {results[0].payload.get('path', 'MikroTik')} endpoint",
-                "What interfaces are active?",
-                "Show me firewall rules",
-                "What wireless clients are connected?"
+                "What's the CPU utilization of the router?",
+                "Show me active interface status",
+                "List all DHCP leases",
+                "What firewall rules are currently active?",
+                "Show me the bandwidth usage statistics"
+            ]
+        except Exception as e:
+            st.warning(f"Error generating related questions: {e}")
+            # Fallback questions
+            return [
+                "Show me active interfaces",
+                "List DHCP leases",
+                "Check firewall rules",
+                "View wireless clients",
+                "What's the router's uptime?"
             ]
     except Exception as e:
         st.error(f"Error generating related questions: {e}")
@@ -299,76 +313,107 @@ def generate_related_questions(query, results):
 def format_responses_to_natural_language_stream(query, endpoints_with_responses, result_placeholder):
     """Format multiple API responses into natural language with streaming output"""
     try:
-        if GOOGLE_API_KEY:
-            # Use Gemini to format
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            
-            # Add conversation history context
-            history_context = ""
-            if len(st.session_state.conversation_history) > 0:
-                last_exchanges = st.session_state.conversation_history[-2:] if len(st.session_state.conversation_history) > 2 else st.session_state.conversation_history
-                history_context = "Recent conversation history:\n" + "\n".join([
-                    f"User: {exchange['query']}\nAssistant: {exchange['response'][:100]}..." 
-                    for exchange in last_exchanges
-                ])
-            
-            # Prepare the prompt
-            prompt = f"""
-            You are a MikroTik networking expert. Convert these technical API responses to natural language for a network engineer.
-            
-            User Query: "{query}"
-            
-            {history_context}
-            
-            API Responses:
-            """
-            
-            for endpoint_data in endpoints_with_responses:
-                endpoint = endpoint_data["endpoint"]
-                response = endpoint_data["response"]
-                prompt += f"\nEndpoint: {endpoint['path']}\nResponse: {json.dumps(response, indent=2)}\n"
-            
-            prompt += """
-            Provide a clear, consolidated answer that addresses the user's query completely using data from all endpoints.
-            
-            Format your response in these sections:
-            1. A direct, concise answer to the question
-            2. Relevant details from the API responses
-            3. Any important observations or recommendations
-            
-            Use technical networking terminology appropriate for a network engineer.
-            """
-            
-            # Initialize the response text
-            full_response = ""
-            result_placeholder.markdown("## 📊 Result")
-            response_placeholder = result_placeholder.empty()
-            
+        # Add conversation history context
+        history_context = ""
+        if len(st.session_state.conversation_history) > 0:
+            last_exchanges = st.session_state.conversation_history[-2:] if len(st.session_state.conversation_history) > 2 else st.session_state.conversation_history
+            history_context = "Recent conversation history:\n" + "\n".join([
+                f"User: {exchange['query']}\nAssistant: {exchange['response'][:100]}..." 
+                for exchange in last_exchanges
+            ])
+        
+        # Prepare the prompt
+        prompt = f"""
+        You are a MikroTik networking expert. Convert these technical API responses to natural language for a network engineer.
+        
+        User Query: "{query}"
+        
+        {history_context}
+        
+        API Responses:
+        """
+        
+        for endpoint_data in endpoints_with_responses:
+            endpoint = endpoint_data["endpoint"]
+            response = endpoint_data["response"]
+            prompt += f"\nEndpoint: {endpoint['path']}\nResponse: {json.dumps(response, indent=2)}\n"
+        
+        prompt += """
+        Provide a clear, consolidated answer that addresses the user's query completely using data from all endpoints.
+        
+        Format your response in these sections:
+        1. A direct, concise answer to the question
+        2. Relevant details from the API responses
+        3. Any important observations or recommendations
+        
+        Use technical networking terminology appropriate for a network engineer.
+        """
+        
+        # System prompt that emphasizes MikroTik expertise
+        system_prompt = """
+        You are a MikroTik networking expert with deep knowledge of RouterOS. 
+        Provide precise, technical information using correct networking terminology.
+        Be concise yet comprehensive, focusing on what's most relevant to the network engineer's query.
+        """
+        
+        # Initialize the response text
+        full_response = ""
+        result_placeholder.markdown("## 📊 Result")
+        response_placeholder = result_placeholder.empty()
+        
+        # Choose between reasoning and standard generation based on user setting
+        if 'use_reasoning' in st.session_state and st.session_state.use_reasoning:
+            try:
+                # Display info about reasoning mode
+                response_placeholder.info("Using two-stage reasoning for a more comprehensive response...")
+                
+                stream_generator = llm.generate_with_reasoning(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=0.7,
+                    stream=True
+                )
+            except Exception as e:
+                st.warning(f"Reasoning generation failed, falling back to standard: {str(e)}")
+                stream_generator = llm.get_completion(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=0.7,
+                    stream=True
+                )
+        else:
             # Generate response with streaming
-            response = model.generate_content(prompt, stream=True)
-            
-            for chunk in response:
-                if not chunk.text:
-                    continue
-                full_response += chunk.text
-                response_placeholder.markdown(full_response + "▌")
+            stream_generator = llm.get_completion(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                stream=True
+            )
+        
+        # Process the streaming response
+        cursor_animation = ["▌", "▐", ""]
+        cursor_idx = 0
+        
+        try:
+            for chunk in stream_generator:
+                full_response += chunk
+                # Animate cursor for better user feedback
+                cursor = cursor_animation[cursor_idx % len(cursor_animation)]
+                response_placeholder.markdown(full_response + cursor)
+                cursor_idx += 1
             
             # Final update without the cursor
             response_placeholder.markdown(full_response)
-            
-            return full_response
-        else:
-            # Fallback if Gemini not available
-            results = []
-            for endpoint_data in endpoints_with_responses:
-                endpoint = endpoint_data["endpoint"]
-                response = endpoint_data["response"]
-                results.append(f"### Results from {endpoint['path']}:\n{json.dumps(response, indent=2)}")
-            
-            result_text = "\n\n".join(results)
-            result_placeholder.markdown("## 📊 Result")
-            result_placeholder.markdown(result_text)
-            return result_text
+        except Exception as e:
+            st.error(f"Streaming error: {str(e)}")
+            # Try to salvage whatever we have
+            if full_response:
+                response_placeholder.markdown(full_response)
+            else:
+                response_placeholder.error("Failed to generate a response. Please try again.")
+                full_response = "Error generating response. Please try again."
+        
+        return full_response
     except Exception as e:
         # Fallback if formatting fails
         result_placeholder.error(f"Error formatting responses: {e}")
@@ -419,11 +464,18 @@ main_col, sidebar_col = st.columns([3, 1])
 
 with sidebar_col:
     st.header("Settings")
+    
+    # LLM settings - simplified to just the reasoning option
+    st.subheader("LLM Settings")
+    use_reasoning = st.checkbox("Use reasoning (two-stage processing)", value=True,
+                              help="Improves quality for complex queries but takes longer")
+    st.session_state.use_reasoning = use_reasoning
+    
     num_results = st.slider("Number of results", min_value=1, max_value=10, value=5)
     score_threshold = st.slider("Minimum similarity score", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
     
     exclude_id_endpoints = st.checkbox("Exclude ID-specific endpoints", value=True, 
-                                      help="Filter out endpoints with {id} parameters that require specific identifiers")
+                                     help="Filter out endpoints with {id} parameters that require specific identifiers")
     
     st.markdown("---")
     
@@ -506,6 +558,7 @@ with sidebar_col:
         for question in st.session_state.related_questions:
             if st.button(question, key=f"related_{hash(question)}"):
                 st.session_state.query = question
+                st.session_state.query_input = question
                 st.session_state.submitted_query = question
                 st.rerun()
     
@@ -524,6 +577,8 @@ with sidebar_col:
     for query in example_queries:
         if st.button(query, key=f"example_{hash(query)}"):
             st.session_state.query = query
+            st.session_state.query_input = query
+            st.session_state.submitted_query = query
             st.rerun()
 
 with main_col:
@@ -537,14 +592,14 @@ with main_col:
         
     # Callback to update submitted query when form is submitted
     def submit_query():
-        st.session_state.submitted_query = st.session_state.query
-    
+        st.session_state.submitted_query = st.session_state.query_input
+        
     # Main query input with form
     with st.form(key="query_form"):
         query_input = st.text_input(
             "Ask about MikroTik configuration:", 
             value=st.session_state.query,
-            key="query"
+            key="query_input"
         )
         submit_button = st.form_submit_button("Search", on_click=submit_query)
     
@@ -574,7 +629,7 @@ with main_col:
         start_time = time.time()
         
         # Generate embedding for query
-        query_embedding = model.encode(query)
+        query_embedding = model.encode(st.session_state.submitted_query)
         
         # Search Qdrant for similar endpoints
         search_results = client.search(
@@ -603,8 +658,8 @@ with main_col:
                 endpoints_text += f"{i+1}. **{result.payload['path']}** (Score: {result.score:.2f})\n"
             endpoints_status.markdown(endpoints_text)
             
-            # Generate related questions in the background
-            related_questions = generate_related_questions(query, search_results)
+            # Generate related questions
+            related_questions = generate_related_questions(st.session_state.submitted_query, search_results)
             st.session_state.related_questions = related_questions
             
             # Connect to router if not already connected
@@ -638,14 +693,14 @@ with main_col:
             # Format all responses into natural language with streaming
             api_status.info("💬 Generating human-readable response...")
             consolidated_response = format_responses_to_natural_language_stream(
-                query, 
+                st.session_state.submitted_query, 
                 endpoints_with_responses,
                 result_container
             )
             
             # Add to conversation history
             st.session_state.conversation_history.append({
-                "query": query,
+                "query": st.session_state.submitted_query,
                 "response": consolidated_response,
                 "endpoints": [ep["endpoint"]["path"] for ep in endpoints_with_responses],
                 "timestamp": time.time()
