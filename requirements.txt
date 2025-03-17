@@ -1,16 +1,27 @@
+# Core dependencies with pinned versions to avoid compatibility issues
+numpy==1.24.3
+torch==2.0.0
+transformers==4.28.0
+huggingface-hub==0.14.1
+sentence-transformers==2.2.2
+
 # For API and file processing
-pyyaml==6.0.1
 python-dotenv==1.0.0
-tqdm==4.66.1
 requests==2.31.0
+tqdm==4.66.1
+pyyaml==6.0.1
 
 # For LLM
 google-generativeai==0.3.1
 litellm==1.20.8
 openai>=1.0.0
 anthropic>=0.8.0
+
+# MikroTik router connection
 routeros_api
 
 # For vector embeddings and storage
-sentence-transformers==2.2.2
 qdrant-client==1.7.0
+
+# Web application framework
+streamlit>=1.27.0
