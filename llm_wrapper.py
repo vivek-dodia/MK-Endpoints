@@ -1,75 +1,197 @@
 """
-LLM wrapper module for MikroTik API Finder using direct DeepSeek API calls.
-This avoids LiteLLM and directly uses the DeepSeek API.
+LLM wrapper module for MikroTik API Finder using direct API calls to Gemini and DeepSeek.
+No dependencies on LiteLLM - just pure API calls.
 """
 
 import os
 import json
-import requests
-from typing import List, Dict, Any, Union, Generator
 import time
+import warnings
+import requests
+from typing import List, Dict, Any, Union, Generator, Optional
 import streamlit as st
+
+# Silence unnecessary warnings
+warnings.filterwarnings("ignore", message="No secrets found")
+warnings.filterwarnings("ignore", message="Examining the path of torch.classes")
 
 class LLMWrapper:
     """
-    A simplified wrapper for DeepSeek API interactions without LiteLLM.
+    A wrapper for LLM interactions using direct API calls.
+    Primary: Gemini 2.0 Flash-Lite
+    Fallback: DeepSeek Chat
     """
     
     def __init__(
         self, 
-        default_model: str = "deepseek-chat",
+        default_model: str = "gemini-flash",
         fallbacks: List[str] = None,
     ):
         """
-        Initialize the DeepSeek API wrapper.
+        Initialize the LLM wrapper for direct API calls.
         
         Args:
             default_model: The default model to use (without provider prefix)
-            fallbacks: Not used in this simplified version
+            fallbacks: List of fallback models if the primary fails
         """
         self.default_model = default_model
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY")
+        self.fallbacks = fallbacks or ["deepseek-chat"]
         
-        if not self.api_key:
-            st.warning("⚠️ No DeepSeek API key found in environment variables. Please set DEEPSEEK_API_KEY.")
-    
-    def get_completion(
-        self, 
-        prompt: str, 
-        model: str = None,
-        system_prompt: str = None,
-        temperature: float = 0.7,
-        max_tokens: int = 1000,
-        stream: bool = False
-    ) -> Union[str, Generator]:
-        """
-        Get a completion from DeepSeek API directly.
+        # Load API keys from environment variables
+        self.google_api_key = os.environ.get("GOOGLE_API_KEY")
+        self.deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
         
-        Args:
-            prompt: The user prompt
-            model: The specific model to use (falls back to default_model)
-            system_prompt: Optional system prompt
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            stream: Whether to stream the response
+        # Track available models
+        self.available_models = []
+        
+        # Check and validate API keys
+        if self.google_api_key:
+            print("Google API key found.")
+            self.available_models.extend([
+                "gemini-flash", 
+                "gemini-pro"
+            ])
+        else:
+            print("WARNING: No Google API key found. Gemini models won't be available.")
+        
+        if self.deepseek_api_key:
+            print("DeepSeek API key found.")
+            self.available_models.extend([
+                "deepseek-chat", 
+                "deepseek-coder"
+            ])
+        else:
+            print("WARNING: No DeepSeek API key found. DeepSeek models won't be available.")
             
-        Returns:
-            Either string response or generator if streaming
-        """
-        model = model or self.default_model
+        print(f"Available models: {self.available_models}")
+    
+    def _call_gemini_api(self, messages, model="gemini-flash", temperature=0.7, max_tokens=1000, stream=False):
+        """Make a direct call to the Gemini API"""
+        # Map model names to Gemini API model names
+        model_map = {
+            "gemini-flash": "gemini-1.5-flash-latest",
+            "gemini-pro": "gemini-1.5-pro-latest"
+        }
+        
+        # Get the correct model name
+        gemini_model = model_map.get(model, "gemini-1.5-flash-latest")
+        
+        # Gemini API endpoint
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent"
+        
+        # Convert messages to Gemini format
+        gemini_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                gemini_messages.append({
+                    "role": "user",
+                    "parts": [{"text": f"System instruction: {msg['content']}"}]
+                })
+            else:
+                gemini_messages.append({
+                    "role": "user" if msg["role"] == "user" else "model",
+                    "parts": [{"text": msg["content"]}]
+                })
+        
+        # Prepare request data
+        data = {
+            "contents": gemini_messages,
+            "generation_config": {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens
+            }
+        }
+        
+        # Prepare headers
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.google_api_key
+        }
+        
+        try:
+            if stream:
+                # For streaming, append ?alt=sse to the URL
+                stream_url = f"{api_url}?alt=sse"
+                response = requests.post(
+                    stream_url,
+                    headers=headers,
+                    json=data,
+                    stream=True
+                )
+                
+                # Check for error
+                if response.status_code != 200:
+                    error_msg = f"Gemini API Error ({response.status_code}): {response.text}"
+                    raise Exception(error_msg)
+                
+                # Return generator for streaming
+                return self._process_gemini_stream(response)
+            else:
+                # Regular response
+                response = requests.post(
+                    api_url,
+                    headers=headers,
+                    json=data
+                )
+                
+                # Check for error
+                if response.status_code != 200:
+                    error_msg = f"Gemini API Error ({response.status_code}): {response.text}"
+                    raise Exception(error_msg)
+                
+                # Parse response
+                response_data = response.json()
+                
+                # Extract text from response
+                try:
+                    text_content = response_data["candidates"][0]["content"]["parts"][0]["text"]
+                    return text_content
+                except (KeyError, IndexError) as e:
+                    raise Exception(f"Unexpected Gemini API response format: {e}")
+                
+        except Exception as e:
+            raise Exception(f"Gemini API call failed: {str(e)}")
+    
+    def _process_gemini_stream(self, response):
+        """Process streaming response from Gemini API"""
+        # Read SSE events from response
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    data = line[6:]  # Remove 'data: ' prefix
+                    
+                    if data == "[DONE]":
+                        break
+                    
+                    try:
+                        json_data = json.loads(data)
+                        if "candidates" in json_data and json_data["candidates"]:
+                            candidate = json_data["candidates"][0]
+                            if "content" in candidate and "parts" in candidate["content"]:
+                                for part in candidate["content"]["parts"]:
+                                    if "text" in part:
+                                        yield part["text"]
+                    except json.JSONDecodeError:
+                        continue
+    
+    def _call_deepseek_api(self, messages, model="deepseek-chat", temperature=0.7, max_tokens=1000, stream=False):
+        """Direct call to DeepSeek API"""
+        # Map model names to DeepSeek API model names
+        model_map = {
+            "deepseek-chat": "deepseek-chat",
+            "deepseek-coder": "deepseek-coder"
+        }
+        
+        # Get the correct model name
+        deepseek_model = model_map.get(model, "deepseek-chat")
         
         # DeepSeek API endpoint
         api_url = "https://api.deepseek.com/v1/chat/completions"
         
-        # Prepare messages
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        
         # Prepare request data
         data = {
-            "model": model,
+            "model": deepseek_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -79,7 +201,7 @@ class LLMWrapper:
         # Prepare headers
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.deepseek_api_key}"
         }
         
         try:
@@ -95,11 +217,10 @@ class LLMWrapper:
                 # Check for error
                 if response.status_code != 200:
                     error_msg = f"DeepSeek API Error ({response.status_code}): {response.text}"
-                    st.error(error_msg)
                     raise Exception(error_msg)
                 
                 # Return generator for streaming
-                return self._process_stream(response)
+                return self._process_deepseek_stream(response)
             else:
                 # Regular response
                 response = requests.post(
@@ -111,7 +232,6 @@ class LLMWrapper:
                 # Check for error
                 if response.status_code != 200:
                     error_msg = f"DeepSeek API Error ({response.status_code}): {response.text}"
-                    st.error(error_msg)
                     raise Exception(error_msg)
                 
                 # Parse response
@@ -119,10 +239,9 @@ class LLMWrapper:
                 return response_data["choices"][0]["message"]["content"]
                 
         except Exception as e:
-            st.error(f"DeepSeek API call failed: {str(e)}")
             raise Exception(f"DeepSeek API call failed: {str(e)}")
     
-    def _process_stream(self, response):
+    def _process_deepseek_stream(self, response):
         """Process streaming response from DeepSeek API"""
         for line in response.iter_lines():
             if line:
@@ -141,6 +260,111 @@ class LLMWrapper:
                             yield delta_content
                     except json.JSONDecodeError:
                         continue
+    
+    def get_completion(
+        self, 
+        prompt: str, 
+        model: str = None,
+        system_prompt: str = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        stream: bool = False
+    ) -> Union[str, Generator]:
+        """
+        Get a completion from the LLM using direct API calls.
+        
+        Args:
+            prompt: The user prompt
+            model: The specific model to use (falls back to default_model)
+            system_prompt: Optional system prompt
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            stream: Whether to stream the response
+            
+        Returns:
+            Either string response or generator if streaming
+        """
+        try:
+            model = model or self.default_model
+            
+            # Prepare messages
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            # Use the appropriate API based on the model
+            if model.startswith("gemini"):
+                # Use Gemini API
+                if not self.google_api_key:
+                    raise Exception("No Google API key found. Cannot use Gemini models.")
+                    
+                return self._call_gemini_api(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=stream
+                )
+            elif model.startswith("deepseek"):
+                # Use DeepSeek API
+                if not self.deepseek_api_key:
+                    raise Exception("No DeepSeek API key found. Cannot use DeepSeek models.")
+                    
+                return self._call_deepseek_api(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=stream
+                )
+            else:
+                raise Exception(f"Unknown model: {model}")
+                
+        except Exception as e:
+            st.warning(f"Primary model {model} failed: {str(e)}")
+            
+            # Try fallback models
+            if model == self.default_model and self.fallbacks:
+                for fallback in self.fallbacks:
+                    try:
+                        st.info(f"Trying fallback model: {fallback}")
+                        
+                        if fallback.startswith("gemini"):
+                            # Use Gemini API
+                            if not self.google_api_key:
+                                continue  # Skip if no API key
+                                
+                            return self._call_gemini_api(
+                                messages=messages,
+                                model=fallback,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=stream
+                            )
+                        elif fallback.startswith("deepseek"):
+                            # Use DeepSeek API
+                            if not self.deepseek_api_key:
+                                continue  # Skip if no API key
+                                
+                            return self._call_deepseek_api(
+                                messages=messages,
+                                model=fallback,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=stream
+                            )
+                        else:
+                            st.warning(f"Unknown fallback model: {fallback}")
+                            continue
+                            
+                    except Exception as fallback_error:
+                        st.warning(f"Fallback {fallback} failed: {str(fallback_error)}")
+                        continue
+            
+            # If all attempts fail, raise the error
+            st.error(f"All LLM completion attempts failed. Last error: {str(e)}")
+            raise Exception(f"All LLM completion attempts failed. Last error: {str(e)}")
 
     def generate_json(
         self, 
@@ -150,7 +374,7 @@ class LLMWrapper:
         temperature: float = 0.2,
     ) -> Union[Dict[str, Any], List[str]]:
         """
-        Get a JSON response from the DeepSeek API.
+        Get a JSON response from the LLM.
         
         Args:
             prompt: The user prompt
@@ -269,6 +493,7 @@ class LLMWrapper:
         """
         
         try:
+            # Try to generate reasoning with primary model
             reasoning = self.get_completion(
                 prompt=reasoning_prompt,
                 model=reasoning_model,

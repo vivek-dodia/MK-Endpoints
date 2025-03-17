@@ -14,6 +14,7 @@ from llm_wrapper import LLMWrapper
 
 # Silence warnings
 warnings.filterwarnings("ignore", message="Examining the path of torch.classes")
+warnings.filterwarnings("ignore", message="Model was trained with padding")
 
 # Configure page first
 st.set_page_config(
@@ -35,9 +36,11 @@ MIKROTIK_IP = os.environ.get("test_harlem_mikrotik", "127.0.0.1")
 MIKROTIK_USER = os.environ.get("test_harlem_mikrotik_user", "")
 MIKROTIK_PW = os.environ.get("test_harlem_mikrotik_pw", "")
 
-# Initialize LLM wrapper - properly configured for DeepSeek models
-# Note: don't include provider prefix in model name for initialization 
-llm = LLMWrapper(default_model="deepseek-chat")
+# Initialize direct LLM wrapper with Gemini Flash as primary and DeepSeek as fallback
+llm = LLMWrapper(
+    default_model="gemini-flash",
+    fallbacks=["deepseek-chat"]
+)
 
 # Initialize session state for conversation history
 if 'conversation_history' not in st.session_state:
@@ -365,7 +368,8 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
         if 'use_reasoning' in st.session_state and st.session_state.use_reasoning:
             try:
                 # Display info about reasoning mode
-                response_placeholder.info("Using two-stage reasoning for a more comprehensive response...")
+                model_info = f"Using primary model: {llm.default_model}"
+                response_placeholder.info(f"{model_info} with two-stage reasoning")
                 
                 stream_generator = llm.generate_with_reasoning(
                     prompt=prompt,
@@ -382,6 +386,10 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
                     stream=True
                 )
         else:
+            # Display info about model being used
+            model_info = f"Using primary model: {llm.default_model}"
+            response_placeholder.info(model_info)
+            
             # Generate response with streaming
             stream_generator = llm.get_completion(
                 prompt=prompt,
@@ -465,8 +473,33 @@ main_col, sidebar_col = st.columns([3, 1])
 with sidebar_col:
     st.header("Settings")
     
-    # LLM settings - simplified to just the reasoning option
+    # LLM settings
     st.subheader("LLM Settings")
+    
+    # Model selection - only show models for which we have API keys
+    available_models = []
+    if os.environ.get("GOOGLE_API_KEY"):
+        available_models.append(("gemini-flash", "Gemini 2.0 Flash-Lite (Fast)"))
+        available_models.append(("gemini-pro", "Gemini Pro (Better quality)"))
+        
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        available_models.append(("deepseek-chat", "DeepSeek Chat"))
+        available_models.append(("deepseek-coder", "DeepSeek Coder"))
+    
+    if available_models:
+        selected_model = st.selectbox(
+            "Primary Model", 
+            options=[m[0] for m in available_models],
+            format_func=lambda x: dict(available_models).get(x, x),
+            index=0
+        )
+        
+        # Update LLM wrapper with selected model
+        if selected_model != llm.default_model:
+            llm.default_model = selected_model
+    else:
+        st.warning("No API keys found for any LLM provider. Please set API keys in your .env file.")
+    
     use_reasoning = st.checkbox("Use reasoning (two-stage processing)", value=True,
                               help="Improves quality for complex queries but takes longer")
     st.session_state.use_reasoning = use_reasoning
