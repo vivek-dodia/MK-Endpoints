@@ -2,3 +2,10 @@
 backgroundColor="#fdfdf7"
 secondaryBackgroundColor="#fdfdf7"
 textColor="#4d505e"
+
+[server]
+# Disable auto-reloader to avoid repeated file loading warnings
+fileWatcherType = "none"
+
+[logger]
+level = "error"
