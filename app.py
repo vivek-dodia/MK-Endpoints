@@ -7,11 +7,12 @@ import warnings
 from src.api_utils import is_id_endpoint, connect_to_mikrotik, safe_disconnect, call_mikrotik_api
 from src.nlp_utils import load_resources, format_responses_to_natural_language_stream
 from src.troubleshooting import (
-    identify_troubleshooting_intent, orchestrate_dhcp_troubleshooting,
-    analyze_dhcp_troubleshooting, render_dhcp_troubleshooting_diagram,
-    get_dhcp_recommendations, is_troubleshooting_query
+    identify_troubleshooting_intent, orchestrate_troubleshooting,
+    analyze_network_troubleshooting, render_network_troubleshooting_diagram,
+    get_network_recommendations, is_troubleshooting_query
 )
 from llm_wrapper import LLMWrapper
+import streamlit.components.v1 as components
 
 # Silence warnings
 warnings.filterwarnings("ignore", message="Examining the path of torch.classes")
@@ -299,6 +300,17 @@ def render_main_content():
     if st.session_state.submitted_query:
         process_query(st.session_state.submitted_query)
 
+# Function to render network diagrams using components
+def render_diagram(html_content, height=300):
+    """Render HTML diagrams using Streamlit components with proper styling"""
+    # Add wrapper and proper styling
+    wrapped_html = f"""
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; margin: 15px 0;">
+      {html_content}
+    </div>
+    """
+    components.html(wrapped_html, height=height, scrolling=False)
+
 # Process the query and display results
 def process_query(query):
     # First, identify if this is a troubleshooting query
@@ -312,56 +324,58 @@ def process_query(query):
         
         # Extract issue details
         issue_details = identify_troubleshooting_intent(query, llm)
+        service = issue_details.get("service", "unknown").lower()
         
-        # Different orchestration based on service type
-        if "dhcp" in issue_details["service"].lower():
-            process_status.info("🔍 Running comprehensive DHCP troubleshooting checks...")
+        process_status.info(f"🔍 Running comprehensive {service} troubleshooting checks...")
+        
+        # Get all relevant data across multiple API endpoints
+        all_results = orchestrate_troubleshooting(issue_details, status_placeholder=process_status)
+        
+        # Create a container for the entire result
+        with result_container.container():
+            # Display the header
+            st.markdown(f"## 🛠️ {service.upper()} Troubleshooting Analysis")
             
-            # Get all relevant data
-            all_results = orchestrate_dhcp_troubleshooting(issue_details, status_placeholder=process_status)
+            # Get the diagram HTML and render it using the dedicated function
+            diagram_html = render_network_troubleshooting_diagram(all_results, issue_details)
             
-            # Display visual diagram
-            result_container.markdown("## 🛠️ DHCP Troubleshooting Analysis")
-            diagram_html = render_dhcp_troubleshooting_diagram(all_results)
-            result_container.markdown(diagram_html, unsafe_allow_html=True)
+            # Use Streamlit components to render the HTML properly
+            render_diagram(diagram_html)
             
             # Get detailed analysis
-            process_status.info("🧠 Analyzing DHCP configuration and logs...")
-            analysis = analyze_dhcp_troubleshooting(all_results, issue_details, llm)
-            result_container.markdown("### Analysis")
-            result_container.markdown(analysis)
+            process_status.info("🧠 Analyzing network configuration and logs...")
+            analysis = analyze_network_troubleshooting(all_results, issue_details, llm)
+            st.markdown("### Analysis")
+            st.markdown(analysis)
             
             # Add actionable items section
             process_status.info("📋 Generating specific recommendations...")
-            recommendations = get_dhcp_recommendations(all_results, issue_details, llm)
-            result_container.markdown("### Recommended Actions")
-            result_container.markdown(recommendations)
-            
-            # Display technical details
-            with tech_details_container:
-                with st.expander("🔍 Technical Details"):
-                    tabs = st.tabs([endpoint.replace('/print', '') for endpoint in all_results.keys()])
-                    for i, tab in enumerate(tabs):
-                        endpoint = list(all_results.keys())[i]
-                        with tab:
-                            st.markdown(f"### Raw Response from {endpoint}")
-                            st.json(all_results[endpoint])
-            
-            # Clear status message
-            process_status.empty()
-            
-            # Add to conversation history
-            st.session_state.conversation_history.append({
-                "query": query,
-                "response": f"{analysis}\n\n{recommendations}",
-                "endpoints": list(all_results.keys()),
-                "timestamp": time.time()
-            })
-            
-            return
+            recommendations = get_network_recommendations(all_results, issue_details, llm)
+            st.markdown("### Recommended Actions")
+            st.markdown(recommendations)
         
-        # Handle other service types (future enhancement)
-        # For now, fall back to standard processing for other service types
+        # Display technical details
+        with tech_details_container:
+            with st.expander("🔍 Technical Details"):
+                tabs = st.tabs([endpoint.replace('/print', '') for endpoint in all_results.keys()])
+                for i, tab in enumerate(tabs):
+                    endpoint = list(all_results.keys())[i]
+                    with tab:
+                        st.markdown(f"### Raw Response from {endpoint}")
+                        st.json(all_results[endpoint])
+        
+        # Clear status message
+        process_status.empty()
+        
+        # Add to conversation history
+        st.session_state.conversation_history.append({
+            "query": query,
+            "response": f"{analysis}\n\n{recommendations}",
+            "endpoints": list(all_results.keys()),
+            "timestamp": time.time()
+        })
+        
+        return
     
     # Get settings from session state
     num_results = st.session_state.get('num_results', 5)
@@ -413,8 +427,6 @@ def process_query(query):
             endpoints_text += f"{i+1}. **{result.payload['path']}** (Score: {result.score:.2f})\n"
         endpoints_status.markdown(endpoints_text)
         
-        # No related questions generation
-        
         # Connect to router if not already connected
         if not st.session_state.mikrotik_connected:
             api_status.info("🔌 Connecting to MikroTik...")
@@ -424,8 +436,17 @@ def process_query(query):
         api_status.info("📡 Querying MikroTik router...")
         endpoints_with_responses = []
         
+        # Group endpoints by API family for better analysis
+        api_family_map = {}
+        
         for i, result in enumerate(search_results):
             endpoint = result.payload
+            api_family = endpoint.get('api_family', 'unknown')
+            
+            # Add to API family map
+            if api_family not in api_family_map:
+                api_family_map[api_family] = []
+            api_family_map[api_family].append(endpoint)
             
             # Update status with current endpoint
             api_status.info(f"📡 Querying endpoint {i+1}/{len(search_results)}: {endpoint['path']}")
@@ -440,7 +461,8 @@ def process_query(query):
             endpoints_with_responses.append({
                 "endpoint": endpoint,
                 "response": response,
-                "score": result.score
+                "score": result.score,
+                "api_family": api_family
             })
         
         # Format all responses into natural language with streaming
@@ -460,32 +482,89 @@ def process_query(query):
             "timestamp": time.time()
         })
         
-        # Collapsible technical details
+        # Collapsible technical details - grouping by API family
         with tech_details_container:
             with st.expander("🔍 Technical Details"):
-                tabs = st.tabs([f"{i+1}. {ep['endpoint']['path']} ({ep['score']:.2f})" for i, ep in enumerate(endpoints_with_responses)])
-                
-                for i, tab in enumerate(tabs):
-                    with tab:
-                        endpoint_data = endpoints_with_responses[i]
-                        endpoint = endpoint_data["endpoint"]
-                        response = endpoint_data["response"]
-                        
-                        st.markdown(f"**Summary**: {endpoint.get('summary', 'No summary available')}")
-                        st.markdown(f"**API Family**: {endpoint.get('api_family', 'Unknown')}")
-                        
-                        st.markdown("### Parameters")
-                        if 'parameter_descriptions' in endpoint and endpoint['parameter_descriptions']:
-                            param_data = []
-                            for param, desc in endpoint['parameter_descriptions'].items():
-                                example = endpoint.get('parameter_examples', {}).get(param, "")
-                                param_data.append([param, desc, example])
+                # Organize tabs by API family
+                if len(api_family_map) > 1:
+                    family_tabs = st.tabs([family.upper() for family in api_family_map.keys()])
+                    
+                    for i, family_tab in enumerate(family_tabs):
+                        family = list(api_family_map.keys())[i]
+                        with family_tab:
+                            # For each API family, create subtabs for each endpoint
+                            endpoints_in_family = api_family_map[family]
                             
-                            if param_data:
-                                st.table(param_data)
-                        
-                        st.markdown("### Raw Response")
-                        st.json(response)
+                            if len(endpoints_in_family) > 1:
+                                endpoint_tabs = st.tabs([ep["path"] for ep in endpoints_in_family])
+                                
+                                for j, endpoint_tab in enumerate(endpoint_tabs):
+                                    with endpoint_tab:
+                                        endpoint = endpoints_in_family[j]
+                                        
+                                        # Find the matching endpoint response
+                                        endpoint_data = next((item for item in endpoints_with_responses if item["endpoint"]["path"] == endpoint["path"]), None)
+                                        
+                                        if endpoint_data:
+                                            st.markdown(f"**Summary**: {endpoint.get('summary', 'No summary available')}")
+                                            
+                                            st.markdown("### Parameters")
+                                            if 'parameter_descriptions' in endpoint and endpoint['parameter_descriptions']:
+                                                param_data = []
+                                                for param, desc in endpoint['parameter_descriptions'].items():
+                                                    example = endpoint.get('parameter_examples', {}).get(param, "")
+                                                    param_data.append([param, desc, example])
+                                                
+                                                if param_data:
+                                                    st.table(param_data)
+                                            
+                                            st.markdown("### Raw Response")
+                                            st.json(endpoint_data["response"])
+                            else:
+                                # Just one endpoint in this family
+                                endpoint = endpoints_in_family[0]
+                                endpoint_data = next((item for item in endpoints_with_responses if item["endpoint"]["path"] == endpoint["path"]), None)
+                                
+                                if endpoint_data:
+                                    st.markdown(f"**Summary**: {endpoint.get('summary', 'No summary available')}")
+                                    
+                                    st.markdown("### Parameters")
+                                    if 'parameter_descriptions' in endpoint and endpoint['parameter_descriptions']:
+                                        param_data = []
+                                        for param, desc in endpoint['parameter_descriptions'].items():
+                                            example = endpoint.get('parameter_examples', {}).get(param, "")
+                                            param_data.append([param, desc, example])
+                                        
+                                        if param_data:
+                                            st.table(param_data)
+                                    
+                                    st.markdown("### Raw Response")
+                                    st.json(endpoint_data["response"])
+                else:
+                    # Only one API family, show all endpoints as tabs
+                    tabs = st.tabs([f"{i+1}. {ep['endpoint']['path']}" for i, ep in enumerate(endpoints_with_responses)])
+                    
+                    for i, tab in enumerate(tabs):
+                        with tab:
+                            endpoint_data = endpoints_with_responses[i]
+                            endpoint = endpoint_data["endpoint"]
+                            response = endpoint_data["response"]
+                            
+                            st.markdown(f"**Summary**: {endpoint.get('summary', 'No summary available')}")
+                            st.markdown(f"**API Family**: {endpoint.get('api_family', 'Unknown')}")
+                            
+                            st.markdown("### Parameters")
+                            if 'parameter_descriptions' in endpoint and endpoint['parameter_descriptions']:
+                                param_data = []
+                                for param, desc in endpoint['parameter_descriptions'].items():
+                                    example = endpoint.get('parameter_examples', {}).get(param, "")
+                                    param_data.append([param, desc, example])
+                                
+                                if param_data:
+                                    st.table(param_data)
+                            
+                            st.markdown("### Raw Response")
+                            st.json(response)
         
         # Update metrics
         st.session_state.last_search_time = elapsed_time

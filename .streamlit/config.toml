@@ -1,7 +1,7 @@
 [theme]
-backgroundColor="#fdfdf7"
-secondaryBackgroundColor="#fdfdf7"
-textColor="#4d505e"
+base="light"
+secondaryBackgroundColor="#fbeff3"
+textColor="#5e5c5c"
 
 [server]
 # Disable auto-reloader to avoid repeated file loading warnings
