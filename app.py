@@ -1,11 +1,16 @@
 import streamlit as st
 import os
-import uuid  # Add this import
+import uuid
 from dotenv import load_dotenv
 import time
 import warnings
 from src.api_utils import is_id_endpoint, connect_to_mikrotik, safe_disconnect, call_mikrotik_api
-from src.nlp_utils import load_resources, generate_related_questions, format_responses_to_natural_language_stream
+from src.nlp_utils import load_resources, format_responses_to_natural_language_stream
+from src.troubleshooting import (
+    identify_troubleshooting_intent, orchestrate_dhcp_troubleshooting,
+    analyze_dhcp_troubleshooting, render_dhcp_troubleshooting_diagram,
+    get_dhcp_recommendations, is_troubleshooting_query
+)
 from llm_wrapper import LLMWrapper
 
 # Silence warnings
@@ -192,16 +197,6 @@ def render_sidebar():
         
         # Router connection settings section
         render_router_connection()
-        
-        st.markdown("---")
-        
-        # Related Questions section
-        render_related_questions()
-        
-        st.markdown("---")
-        
-        # Example queries section
-        render_example_queries()
 
 # Router connection settings
 def render_router_connection():
@@ -215,29 +210,32 @@ def render_router_connection():
     router_port = st.number_input("Port", min_value=1, max_value=65535, value=8728)
     use_ssl = st.checkbox("Use SSL", value=False)
     
-    # Toggle between mock and real data
-    use_mock = st.checkbox("Use Mock Data", value=False, 
-                          help="Use simulated data instead of connecting to a real router")
-    st.session_state.use_mock_data = use_mock
-    
     # Display connection status indicator
     with conn_status_container:
-        if st.session_state.use_mock_data:
-            st.markdown(
-                f"""<div class="status-container">
-                    <div class="status-indicator status-gray"></div>
-                    <div>Using mock data</div>
-                </div>""", 
-                unsafe_allow_html=True
-            )
-        elif st.session_state.mikrotik_connected:
-            st.markdown(
-                f"""<div class="status-container">
-                    <div class="status-indicator status-green"></div>
-                    <div>Connected to {router_ip}</div>
-                </div>""", 
-                unsafe_allow_html=True
-            )
+        if st.session_state.mikrotik_connected:
+            # Get router status if connected
+            try:
+                resource = st.session_state.mikrotik_api.get_resource('/system/resource')
+                uptime = resource.get()[0].get('uptime', 'Unknown')
+                cpu = resource.get()[0].get('cpu-load', '0')
+                
+                st.markdown(
+                    f"""<div class="status-container">
+                        <div class="status-indicator status-green"></div>
+                        <div>Connected to {router_ip}<br>
+                        <span style="font-size: 0.8em; color: #666;">Uptime: {uptime} | CPU: {cpu}%</span>
+                        </div>
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
+            except:
+                st.markdown(
+                    f"""<div class="status-container">
+                        <div class="status-indicator status-green"></div>
+                        <div>Connected to {router_ip}</div>
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
         else:
             st.markdown(
                 f"""<div class="status-container">
@@ -247,63 +245,32 @@ def render_router_connection():
                 unsafe_allow_html=True
             )
     
-    if not use_mock:
-        # Test connection button
-        if st.button("Test Connection"):
-            conn_test_status = st.empty()
-            conn_test_status.info("Testing connection...")
-            
-            # Disconnect any existing connection
-            safe_disconnect()
-            
-            # Try to connect
-            api = connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
-            if api:
-                # Test with a simple command
-                try:
-                    resource = api.get_resource('/system/resource')
-                    result = resource.get()[0]
-                    conn_test_status.markdown(
-                        f"""✅ Connection successful!  
-                        Router uptime: {result.get('uptime', 'Unknown')}  
-                        Version: {result.get('version', 'Unknown')}"""
-                    )
-                    # Force refresh the connection status indicator
-                    st.rerun()
-                except Exception as e:
-                    conn_test_status.error(f"Connection test failed: {str(e)}")
-            else:
-                conn_test_status.error("Connection failed")
-
-# Related questions section
-def render_related_questions():
-    st.header("Related Questions")
-    if 'related_questions' in st.session_state:
-        for question in st.session_state.related_questions:
-            if st.button(question, key=f"related_{hash(question)}"):
-                st.session_state.query = question
-                st.session_state.query_input = question
-                st.session_state.submitted_query = question
+    # Test connection button
+    if st.button("Test Connection"):
+        conn_test_status = st.empty()
+        conn_test_status.info("Testing connection...")
+        
+        # Disconnect any existing connection
+        safe_disconnect()
+        
+        # Try to connect
+        api = connect_to_mikrotik(router_ip, router_user, router_password, router_port, use_ssl)
+        if api:
+            # Test with a simple command
+            try:
+                resource = api.get_resource('/system/resource')
+                result = resource.get()[0]
+                conn_test_status.markdown(
+                    f"""✅ Connection successful!  
+                    Router uptime: {result.get('uptime', 'Unknown')}  
+                    Version: {result.get('version', 'Unknown')}"""
+                )
+                # Force refresh the connection status indicator
                 st.rerun()
-
-# Example queries section
-def render_example_queries():
-    st.header("Example Queries")
-    example_queries = [
-        "Show me all interfaces and their IP addresses",
-        "List all DHCP leases",
-        "What firewall rules are active?",
-        "Show wireless clients connected to my network",
-        "Check bridge port status",
-        "View all DNS settings"
-    ]
-    
-    for query in example_queries:
-        if st.button(query, key=f"example_{hash(query)}"):
-            st.session_state.query = query
-            st.session_state.query_input = query
-            st.session_state.submitted_query = query
-            st.rerun()
+            except Exception as e:
+                conn_test_status.error(f"Connection test failed: {str(e)}")
+        else:
+            conn_test_status.error("Connection failed")
 
 # Render the main content
 def render_main_content():
@@ -334,6 +301,68 @@ def render_main_content():
 
 # Process the query and display results
 def process_query(query):
+    # First, identify if this is a troubleshooting query
+    if is_troubleshooting_query(query):
+        # Create placeholder for streaming updates
+        process_status = st.empty()
+        result_container = st.empty()
+        tech_details_container = st.container()
+        
+        process_status.info("🛠️ Detecting troubleshooting scenario...")
+        
+        # Extract issue details
+        issue_details = identify_troubleshooting_intent(query, llm)
+        
+        # Different orchestration based on service type
+        if "dhcp" in issue_details["service"].lower():
+            process_status.info("🔍 Running comprehensive DHCP troubleshooting checks...")
+            
+            # Get all relevant data
+            all_results = orchestrate_dhcp_troubleshooting(issue_details, status_placeholder=process_status)
+            
+            # Display visual diagram
+            result_container.markdown("## 🛠️ DHCP Troubleshooting Analysis")
+            diagram_html = render_dhcp_troubleshooting_diagram(all_results)
+            result_container.markdown(diagram_html, unsafe_allow_html=True)
+            
+            # Get detailed analysis
+            process_status.info("🧠 Analyzing DHCP configuration and logs...")
+            analysis = analyze_dhcp_troubleshooting(all_results, issue_details, llm)
+            result_container.markdown("### Analysis")
+            result_container.markdown(analysis)
+            
+            # Add actionable items section
+            process_status.info("📋 Generating specific recommendations...")
+            recommendations = get_dhcp_recommendations(all_results, issue_details, llm)
+            result_container.markdown("### Recommended Actions")
+            result_container.markdown(recommendations)
+            
+            # Display technical details
+            with tech_details_container:
+                with st.expander("🔍 Technical Details"):
+                    tabs = st.tabs([endpoint.replace('/print', '') for endpoint in all_results.keys()])
+                    for i, tab in enumerate(tabs):
+                        endpoint = list(all_results.keys())[i]
+                        with tab:
+                            st.markdown(f"### Raw Response from {endpoint}")
+                            st.json(all_results[endpoint])
+            
+            # Clear status message
+            process_status.empty()
+            
+            # Add to conversation history
+            st.session_state.conversation_history.append({
+                "query": query,
+                "response": f"{analysis}\n\n{recommendations}",
+                "endpoints": list(all_results.keys()),
+                "timestamp": time.time()
+            })
+            
+            return
+        
+        # Handle other service types (future enhancement)
+        # For now, fall back to standard processing for other service types
+    
     # Get settings from session state
     num_results = st.session_state.get('num_results', 5)
     score_threshold = st.session_state.get('score_threshold', 0.35)
@@ -384,12 +413,10 @@ def process_query(query):
             endpoints_text += f"{i+1}. **{result.payload['path']}** (Score: {result.score:.2f})\n"
         endpoints_status.markdown(endpoints_text)
         
-        # Generate related questions
-        related_questions = generate_related_questions(query, search_results, llm)
-        st.session_state.related_questions = related_questions
+        # No related questions generation
         
         # Connect to router if not already connected
-        if not st.session_state.use_mock_data and not st.session_state.mikrotik_connected:
+        if not st.session_state.mikrotik_connected:
             api_status.info("🔌 Connecting to MikroTik...")
             connect_to_mikrotik(MIKROTIK_IP, MIKROTIK_USER, MIKROTIK_PW)
         
@@ -515,8 +542,6 @@ def add_javascript():
 
 # Main function to run the app
 def main():
-    import uuid  # For session ID
-    
     # Initialize session state
     init_session_state()
     
@@ -544,7 +569,7 @@ def main():
     sidebar_html = f"""
     <div class="sidebar-panel {'closed' if not st.session_state.sidebar_expanded else ''}">
         <h3>Settings</h3>
-        <p>Toggle settings, view related questions, and examples here.</p>
+        <p>Toggle settings here.</p>
     </div>
     """
     st.markdown(sidebar_html, unsafe_allow_html=True)
