@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", message="Model was trained with padding")
 
 # Configure page first
 st.set_page_config(
-    page_title="MikroTik API Finder",
+    page_title="MK-Endpoints",
     page_icon="🔍",
     layout="wide"
 )
@@ -56,6 +56,10 @@ if 'mikrotik_connected' not in st.session_state:
 # Store the RouterOS API connection
 if 'mikrotik_api' not in st.session_state:
     st.session_state.mikrotik_api = None
+
+# Track sidebar state
+if 'sidebar_expanded' not in st.session_state:
+    st.session_state.sidebar_expanded = False
 
 # Initialize clients
 @st.cache_resource
@@ -435,13 +439,10 @@ def format_responses_to_natural_language_stream(query, endpoints_with_responses,
         result_placeholder.markdown(result_text)
         return result_text
 
-# Header
-st.title("🔍 MikroTik API Finder")
-st.markdown("Ask questions in natural language and get answers from the right MikroTik API endpoints.")
-
-# Define custom CSS for status indicators
+# Custom CSS for styling
 st.markdown("""
 <style>
+/* Status indicators */
 .status-indicator {
     display: inline-block;
     width: 12px;
@@ -449,28 +450,101 @@ st.markdown("""
     border-radius: 50%;
     margin-right: 8px;
 }
-.status-green {
-    background-color: #28a745;
-}
-.status-red {
-    background-color: #dc3545;
-}
-.status-gray {
-    background-color: #6c757d;
-}
+.status-green { background-color: #28a745; }
+.status-red { background-color: #dc3545; }
+.status-gray { background-color: #6c757d; }
 .status-container {
     display: flex;
     align-items: center;
     margin-bottom: 10px;
     font-size: 14px;
 }
+
+/* Custom sidebar toggle */
+.sidebar-toggle {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    z-index: 1000;
+    background-color: #f0f2f6;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+/* Sidebar panel */
+.sidebar-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 350px;
+    height: 100vh;
+    background-color: #f0f2f6;
+    padding: 20px;
+    box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+    overflow-y: auto;
+    transition: transform 0.3s ease;
+    z-index: 999;
+}
+.sidebar-panel.closed {
+    transform: translateX(350px);
+}
+
+/* Main content adjustments */
+.main-content {
+    transition: margin-right 0.3s ease;
+}
+.main-content.sidebar-open {
+    margin-right: 350px;
+}
+
+/* Buttons in sidebar */
+.sidebar-panel button {
+    margin-bottom: 8px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# Main content and sidebar layout
-main_col, sidebar_col = st.columns([3, 1])
+# Function to toggle sidebar
+def toggle_sidebar():
+    st.session_state.sidebar_expanded = not st.session_state.sidebar_expanded
 
-with sidebar_col:
+# App Header
+st.title("🔍 MK-Endpoints")
+st.markdown("Ask questions in natural language and get answers from the right MikroTik API endpoints.")
+
+# Sidebar toggle button
+st.markdown(
+    f"""
+    <div class="sidebar-toggle" onclick="document.querySelector('.sidebar-panel').classList.toggle('closed'); document.querySelector('.main-content').classList.toggle('sidebar-open');">
+        {'≪' if st.session_state.sidebar_expanded else '≫'}
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
+# Main content area with proper class for sidebar interactions
+st.markdown('<div class="main-content"></div>', unsafe_allow_html=True)
+
+# Create fixed-position sidebar panel
+sidebar_html = f"""
+<div class="sidebar-panel {'closed' if not st.session_state.sidebar_expanded else ''}">
+    <h3>Settings</h3>
+    <p>Toggle settings, view related questions, and examples here.</p>
+</div>
+"""
+st.markdown(sidebar_html, unsafe_allow_html=True)
+
+# Main content and sidebar logic
+main_col = st.container()
+sidebar_area = st.sidebar
+
+with sidebar_area:
     st.header("Settings")
     
     # LLM settings
@@ -739,9 +813,6 @@ with main_col:
                 "timestamp": time.time()
             })
             
-            # Clear status messages
-            api_status.empty()
-            
             # Collapsible technical details
             with tech_details_container:
                 with st.expander("🔍 Technical Details"):
@@ -783,7 +854,7 @@ if 'last_search_time' not in st.session_state:
     st.session_state.last_search_time = None
     st.session_state.last_search_count = 0
 
-if st.session_state.submitted_query and search_results:
+if st.session_state.submitted_query and 'search_results' in locals() and search_results:
     st.session_state.last_search_time = elapsed_time
     st.session_state.last_search_count = len(search_results)
 
@@ -794,9 +865,37 @@ with metrics_col1:
         st.metric("Last search time", f"{st.session_state.last_search_time:.2f}s")
 with metrics_col2:
     if st.session_state.last_search_count:
-        st.metric("Endpoints found", st.session_state.last_search_count)
+        st.metric("Endpoints found", f"{st.session_state.last_search_count}")
 with metrics_col3:
     if len(st.session_state.conversation_history) > 0:
-        st.metric("Conversation length", len(st.session_state.conversation_history))
+        st.metric("Conversation length", f"{len(st.session_state.conversation_history)}")
+
+# Add JavaScript for sidebar toggle functionality
+st.markdown("""
+<script>
+// Sidebar toggle functionality
+document.addEventListener('DOMContentLoaded', function() {
+    // Get sidebar elements
+    const sidebarToggle = document.querySelector('.sidebar-toggle');
+    const sidebarPanel = document.querySelector('.sidebar-panel');
+    const mainContent = document.querySelector('.main-content');
+    
+    // Toggle sidebar on button click
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', function() {
+            sidebarPanel.classList.toggle('closed');
+            mainContent.classList.toggle('sidebar-open');
+            
+            // Update toggle icon
+            if (sidebarPanel.classList.contains('closed')) {
+                sidebarToggle.textContent = '≫';
+            } else {
+                sidebarToggle.textContent = '≪';
+            }
+        });
+    }
+});
+</script>
+""", unsafe_allow_html=True)
 
 st.markdown("This tool uses vector similarity to find the most relevant MikroTik API endpoints and consolidates information into natural language.")
